@@ -196,9 +196,9 @@ const receive = (msg) => new Promise((resolve, reject) => {
                 }
 
                 if (msg.extra.clients >= 3) {
-                    prefix = `[${msg.extra.clientName.shortname} - ${msg.nick}] ${special}`;
+                    prefix = `[${msg.extra.clientName.shortname} - ${msg.nick}]: ${special}`;
                 } else {
-                    prefix = `[${msg.nick}] ${special}`;
+                    prefix = `[${msg.nick}]: ${special}`;
                 }
             }
 
