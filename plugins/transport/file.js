@@ -286,7 +286,7 @@ const uploadToUguu = (file) => new Promise((resolve, reject) => {
     const post = (pendingfile, name, callback) => request.post({
         url: servemedia.UguuApiUrl,
         formData: {
-            "file": {
+            "files[]": {
                 value: pendingfile,
                 options: {
                     filename: name
