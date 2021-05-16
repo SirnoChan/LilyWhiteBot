@@ -403,8 +403,17 @@ const processTelegramFile = file => new Promise((resolve, reject) => {
 /*
  * 處理來自 QQ 的多媒體訊息
  */
+const getQQVoiceFormat = (name) => {
+    if (name.match(/.silk/g)) {
+        return 'silk';
+    } else if (name.match(/.amr/g)) {
+        return 'amr';
+    } else {
+        return '';
+    };
+};
 const getQQPhotoPath = (name) => handlers.get('QQ').image(name).then((path) => Promise.resolve({ path: path }));
-const getQQVoicePath = (name) => Promise.resolve({ path: path.join(servemedia.coolqCache, 'record', name) });
+const getQQVoicePath = (name) => handlers.get('QQ').record(name, getQQVoiceFormat(name)).then((path) => Promise.resolve({ path: path }));
 const getQQPhotoUrl = name => new Promise((resolve, reject) => {
     let p = path.join(servemedia.coolqCache, 'image', name) + '.cqimg';
     fs.readFile(p, (err, data) => {
