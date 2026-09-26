@@ -71,6 +71,10 @@ const streamToBuffer = (stream) => new Promise((resolve, reject) => {
  */
 const getFileStream = async (file) => {
     let filePath = file.url || file.path;
+    // 防御：個別依賴（如 telegraf v4 的 getFileLink）可能返回 URL 對象
+    if (typeof filePath !== 'string') {
+        filePath = String(filePath);
+    }
     let fileStream;
 
     if (file.url) {
@@ -123,7 +127,7 @@ const pipeFileStream = (file, pipe) => new Promise(async (resolve, reject) => {
  * 儲存至本機快取
  */
 const uploadToCache = async (file) => {
-    let targetName = generateFileName(file.url || file.path, file.id);
+    let targetName = generateFileName(String(file.url || file.path), file.id);
     let targetPath = path.join(servemedia.cachePath, targetName);
     let writeStream = fs.createWriteStream(targetPath).on('error', (e) => { throw e; });
     await pipeFileStream(file, writeStream);
@@ -137,7 +141,7 @@ const uploadToHost = async (host, file) => {
     const timeout = servemedia.timeout || 3000;
     const useragent = servemedia.userAgent || USERAGENT;
 
-    let name = generateFileName(file.url || file.path, file.id);
+    let name = generateFileName(String(file.url || file.path), file.id);
 
     // p4: reject .exe (complaint from the site admin)
     if (path.extname(name) === '.exe') {
@@ -246,7 +250,7 @@ const uploadToHost = async (host, file) => {
  * 上傳到自行架設的 linx 圖床上面
  */
 const uploadToLinx = async (file) => {
-    let name = generateFileName(file.url || file.path, file.id);
+    let name = generateFileName(String(file.url || file.path), file.id);
 
     let pendingFile = await streamToBuffer(await getFileStream(file));
 

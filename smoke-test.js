@@ -293,12 +293,12 @@ console.log('[2] transport loaded, map keys:', Object.keys(bridge.map).join(' | 
     qqHandler._pathMap = { '/app/.config/QQ': tmpDir };  // 让映射目标指向本机临时目录
     const fakeContainerPath = '/app/.config/QQ/test.mp4';
     fs.writeFileSync(pathMod.join(tmpDir, 'test.mp4'), 'fake-video-content');
-
-    // 情形1：get_file 返回本地路径（映射后存在）
+    // 情形1：get_file 返回本地路径（映射后存在且大小完整）
+    const fakeContent = 'fake-video-content';
     qqHandler._client = async (action, params) => {
         assert.strictEqual(action, 'get_file');
         assert.strictEqual(params.file_id, 'nya.mp4');
-        return { file: fakeContainerPath, url: fakeContainerPath, file_size: 100 };
+        return { file: fakeContainerPath, url: fakeContainerPath, file_size: fakeContent.length };
     };
     let r1 = await qqHandler._fetchVideoFile(fakeContainerPath, [{ file: 'nya.mp4', url: fakeContainerPath }]);
     assert.ok(r1 && r1.path, 'get_file returns a path');

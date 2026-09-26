@@ -314,7 +314,7 @@ const receive = async (msg) => {
     let output = format(template, meta);
     let useragent = config.options.servemedia.userAgent || USERAGENT;
     let headers = JSON.stringify({'User-Agent': useragent});
-    for (let upload of msg.extra.uploads) {
+    for (let upload of (msg.extra.uploads || [])) {
         if (upload.type === 'audio') {
             output += '\n' + `[CQ:record,file=${upload.url},headers=${headers}]`;
         } else if (upload.type === 'image') {
