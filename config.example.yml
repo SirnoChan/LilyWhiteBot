@@ -108,6 +108,29 @@ Discord:
     # apiRoot: "https://discord.com/api"      # 自訂 api endpoint 網址（例如反代網址）
     # cdnRoot: "https://cdn.discordapp.com"   # 自訂 cdn 網址（例如反代網址）
     relayEmoji: true                        # 轉發時附帶自定義表情圖片，如為否只轉發表情名稱
+    # guildMembersIntent: false             # 特權 Intent：如需獲取伺服器成員列表資訊（一般互聯不需要），並已在 Discord 開發者後台開啟 SERVER MEMBERS INTENT 時才可開啟
+
+Matrix:
+  disabled: true                            # 如果需要 Matrix 机器人，请设置为 false
+  bot:
+    homeserverUrl: "https://matrix.org"     # homeserver 位址（自建伺服器填自己的網址）
+    accessToken: ""                         # 機器人帳號的存取權杖，取得方式見下方說明
+    userId: ""                              # 機器人的完整 mxid（如 "@bot:matrix.org"），留空則自動取得
+
+    # Access Token 獲取方法：
+    # 1. 註冊一個 Matrix 帳號（例如在 https://app.element.org 或自己的 homeserver 上）；
+    # 2. 登入後（以 Element 網頁版為例）打開「設定 -> 說明與關於 -> 進階」，找到 access token；
+    #    或者調用登入 API：
+    #    curl -XPOST -d '{"type":"m.login.password","identifier":{"type":"m.id.user","user":"botuser"},"password":"密碼"}' "https://你的homeserver/_matrix/client/r0/login"
+    # 3. 把返回的 access_token 填到上面。注意：access token 等同於帳號密碼，請妥善保管。
+
+  options:
+    nickStyle: displayname                  # 轉發時顯示的暱稱：「displayname」（Matrix 顯示名稱）、「mxid」（完整用戶 ID）
+    autoJoin: false                         # 收到房間邀請時是否自動加入
+
+    # 注意：目前不支援端到端加密（E2EE）房間，加密房間內的訊息不會被轉發。
+    # 群組 ID 即 Matrix 房間 ID（以 ! 開頭，例如 !abcdef:matrix.org），
+    # 可在 Element 房間設定 -> 進階 中查看，填入 transport.groups 時寫作 matrix/!abcdef:matrix.org
 
 # 系统日志
 logging:
@@ -133,6 +156,7 @@ transport:
   #    telegram/-群组ID 例如 telegram/-12345678
   #    qq/群号 例如 qq/12345678
   #    discord/ID 例如 discord/123123123123
+  #    matrix/房間ID 例如 matrix/!abcdef:matrix.org
   # 3. 如果需要，可以加入多個互聯體。例如将两个 QQ 分群连接到一起。
   groups:
     - ['irc/#test', 'telegram/-12345678', 'qq/12345678']
@@ -227,6 +251,8 @@ transport:
       # 格式为 "机器人名称: 机器人discriminator编号"。
       forwardBots:
         Repeater: 1202
+
+    Matrix: {}                                # Matrix 暫無特殊選項（通知類功能後續版本加入）
 
     # 其他设置
     paeeye:                                 # 留空或省略則禁用本功能

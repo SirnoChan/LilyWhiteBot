@@ -16,9 +16,9 @@ const truncate = (str, maxLen = 10) => {
     return str;
 };
 
-let userInfo = new LRU({
+let userInfo = new LRU.LRUCache({
     max: 500,
-    maxAge: 3600000,
+    ttl: 3600000,
 });
 
 let bridge = null;
@@ -225,7 +225,32 @@ const receive = async (msg) => {
     }
 
     let output = format(template, meta);
-    let attachFileUrls = (msg.extra.uploads || []).map(u => ` ${u.url}`).join('');
+
+    // 影片以附件形式隨訊息發送，Discord 客戶端會直接內嵌播放；其他類型仍以連結顯示
+    let videoFiles = [];
+    let attachFileUrls = '';
+    for (let upload of (msg.extra.uploads || [])) {
+        if (upload.type === 'video') {
+            let m = upload.url.match(/\.(\w+)(?:\?|$)/u);
+            videoFiles.push({
+                attachment: upload.url,
+                name: `video.${m ? m[1] : 'mp4'}`,
+            });
+        } else {
+            attachFileUrls += ` ${upload.url}`;
+        }
+    }
+
+    if (videoFiles.length) {
+        try {
+            await discordHandler.say(msg.to, `${output}${attachFileUrls}`, { files: videoFiles });
+            return;
+        } catch (e) {
+            winston.warn(`DiscordBot failed to send video as attachment, falling back to URL: ${e.message}`);
+            attachFileUrls += ` ${videoFiles.map(f => f.attachment).join(' ')}`;
+        }
+    }
+
     discordHandler.say(msg.to, `${output}${attachFileUrls}`);
 };
 

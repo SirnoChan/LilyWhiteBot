@@ -14,9 +14,10 @@ LilyWhiteBot
 目前新qq協議如 [napcat](https://github.com/NapNeko/NapCatQQ) 等已經可以使用。
 
 ## 功能
-* QQ（实验性）、Telegram、IRC、Discord 等多组聊天群之间互联。
+* QQ（实验性）、Telegram、IRC、Discord、Matrix 等多组聊天群之间互联。
 * 可根据需要配置单向互联，或者将同一聊天软件的多个分群互联到一起。
 * 支持图片转发。如不能发送图片（IRC），程序可将图片上传到图床并提供图片链接。
+* 视频、图片、语音等媒体在各平台以原生内嵌形式发送（Discord 附件、Telegram sendVideo、Matrix m.video、OneBot CQ:video），而非以纯文件形式发送。
 * 支持自定义转发消息样式。
 * 支持 Docker 部署。
 * 可支持扩展（备注：目前接口尚不完善，请尽量避免自己写插件）。
@@ -38,6 +39,17 @@ IRC 不需要注册。为了提高安全性，您可以采取注册 Nick、增�
 1. 进入 [Discord Developer Portal](https://discordapp.com/developers/applications/)，创建 Application。创建完成后记录 CLIENT ID。
 2. 进入 Bot 页面，点击 Add Bot，创建机器人。创建成功后记录 Token。找到 Previledged Gateway Intents 并把下面的 SERVER MEMBERS INTENT, MESSAGE CONTENT INTENT 权限打开。
 3. 进入 OAuth2 页面，往下翻到“OAuth2 URL Generator”，找到 SCOPES 并勾选 bot，然后再继续勾选 BOT PERMISSIONS 中的权限（例如 Administrator），系统会生成一个链接。访问生成的链接，按照屏幕提示将机器人拉入到你的服务器与频道中。
+
+#### Matrix
+1. 准备一个 Matrix 帐号（可在 [Element](https://app.element.org) 或任意 homeserver 注册，建议为机器人单独注册一个）。
+2. 获取 Access Token：在 Element 网页版中打开「设定 -> 帮助与关于 -> 高级」，找到 Access Token；或调用登录 API：
+   ```
+   curl -XPOST -d '{"type":"m.login.password","identifier":{"type":"m.id.user","user":"botuser"},"password":"密码"}' "https://你的homeserver/_matrix/client/r0/login"
+   ```
+3. 将 homeserver 网址与 Access Token 填入 config.yml 的 `Matrix` 节，并把 `disabled` 改为 `false`。
+4. 将机器人帐号邀请进需要互联的房间（或在配置中开启 `autoJoin`），然后在 `transport.groups` 中加入 `matrix/房间ID`。房间 ID 以 `!` 开头，可在 Element 的房间设置 -> 高级中查看。
+
+注意：目前不支持端到端加密（E2EE）房间，加密房间内的消息不会被转发。
 <!--
 #### 微信
 **警告：微信极容易被封号，请认真阅读[注意事项](https://github.com/Zokhoi/LilyWhiteBot/wiki/%E5%BE%AE%E4%BF%A1%E6%B3%A8%E6%84%8F%E4%BA%8B%E9%A1%B9%EF%BC%88%E4%BD%BF%E7%94%A8%E5%89%8D%E5%BF%85%E8%AF%BB%EF%BC%81%EF%BC%89)之后再进行操作！**
@@ -54,7 +66,7 @@ IRC 不需要注册。为了提高安全性，您可以采取注册 Nick、增�
 
 ### 配置互联程序（手工操作）
 #### 配置 LilyWhiteBot
-1. 安装 Node.js，最小版本 16。
+1. 安装 Node.js，最小版本 18。
 2. 下载代码
 ```
 git clone https://github.com/Zokhoi/LilyWhiteBot
@@ -75,13 +87,16 @@ node main.js
 * IRC、QQ：分别为频道名称（以 `#` 开头）和 QQ 群号码。在 LilyWhiteBot 配置文件中分别为 `irc/#频道名称` 与 `qq/群号`，例如 `irc/#test`、`qq/12345678`。
 * Telegram：将 [@GroupIDbot](https://t.me/GroupIDbot) 拉入到您的聊天群，然后输入 `/id`，机器人会返回聊天群的 ID。这个 ID 是一个负数，在 LilyWhiteBot 配置文件中需要写成类似 `telegram/-1234567890` 的格式。
 * Discord：进入 Discord 的用户设置（User Settings），找到 Appearance，启用“Enable Developer Mode”选项。然后右击聊天频道，在弹出菜单中选择“Copy ID”。在 LilyWhiteBot 配置文件中需要写成类似 `discord/1234567890` 的格式。
+* Matrix：房间 ID 以 `!` 开头（形如 `!abcdef:matrix.org`），可在 Element 的房间设置 -> 高级中查看。在 LilyWhiteBot 配置文件中写成类似 `matrix/!abcdef:matrix.org` 的格式。
 
 ### 从其他版本升级
-如果您从其他版本升级，请注意以下三点：
+如果您从其他版本升级，请注意以下几点：
 
-1. Node.js 最低版本为 16。
+1. Node.js 最低版本为 18。
 2. 配置文件格式由 json 换成了 yaml。json 配置文件仍然可用，但您会收到一条警告信息。
 3. 程序不再支持酷 Q。
+4. Discord 依赖升级到 discord.js v14：请在 Discord 开发者后台确认已开启 MESSAGE CONTENT INTENT（旧版本亦需要），否则机器人收不到消息内容。
+5. 若国内服务器因网络原因无法直连 Discord/Matrix 服务器，请自行配置代理或反向代理后再运行。
 
 ## 实验性插件
 以下各功能的设定方法均为改 config.yml。接口与功能可能会有所调整。详细内容参见[插件](https://github.com/Zokhoi/LilyWhiteBot/wiki/%E6%8F%92%E4%BB%B6)。

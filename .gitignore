@@ -1,7 +1,11 @@
 # Logs
 logs
 *.log
+log.out
 npm-debug.log*
+
+# node-gyp / build artifacts
+build/
 
 # Runtime data
 pids

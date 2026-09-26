@@ -16,13 +16,13 @@ const truncate = (str, maxLen = 10) => {
     return str;
 };
 
-let bannedMessage = new LRU({
+let bannedMessage = new LRU.LRUCache({
     max: 500,
-    maxAge: 300000,
+    ttl: 300000,
 });
-let groupInfo = new LRU({
+let groupInfo = new LRU.LRUCache({
     max: 500,
-    maxAge: 3600000,
+    ttl: 3600000,
 });
 
 let bridge = null;

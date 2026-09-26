@@ -16,7 +16,8 @@ const allHandlers = new Map([
     ['IRC', 'IRCMessageHandler'],
     ['Telegram', 'TelegramMessageHandler'],
     ['QQ', 'QQOnebot11MessageHandler'],
-    ['Discord', 'DiscordMessageHandler']
+    ['Discord', 'DiscordMessageHandler'],
+    ['Matrix', 'MatrixMessageHandler']
 ]);
 
 // 所有擴充套件包括傳話機器人都只與該物件打交道

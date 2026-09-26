@@ -3,6 +3,7 @@
 const path = require('path');
 const BridgeMsg = require('../BridgeMsg.js');
 const format = require('string-format');
+const winston = require('winston');
 
 const htmlEscape = (str) => {
     return str.replace(/&/gu, '&amp;').replace(/</gu, '&lt;').replace(/>/gu, '&gt;');
@@ -194,6 +195,14 @@ const receive = async (msg) => {
                     await tgHandler.sendAnimation(msg.to, upload.url, replyOption);
                 } else {
                     await tgHandler.sendPhoto(msg.to, upload.url, replyOption);
+                }
+            } else if (upload.type === 'video') {
+                // 以影片形式傳送（Telegram 伺服器自行從 URL 抓取），用戶端內嵌播放
+                try {
+                    await tgHandler.sendVideo(msg.to, upload.url, replyOption);
+                } catch (e) {
+                    winston.warn(`TelegramBot failed to send video, falling back to document: ${e.message}`);
+                    await tgHandler.sendDocument(msg.to, upload.url, replyOption);
                 }
             } else {
                 await tgHandler.sendDocument(msg.to, upload.url, replyOption);

@@ -1,7 +1,7 @@
 {
     "name": "lilywhitebot",
-    "version": "1.6.0alpha",
-    "description": "多聊天群互联机器人（目前支持 QQ、Telegram、IRC、Discord）",
+    "version": "1.7.0alpha",
+    "description": "多聊天群互联机器人（目前支持 QQ、Telegram、IRC、Discord、Matrix）",
     "repository": "github:Zokhoi/LilyWhiteBot",
     "license": "AGPL-3.0-or-later",
     "bugs": {
@@ -9,25 +9,26 @@
     },
     "dependencies": {
         "cqhttp-lilywhitebot": "^1.2.1",
-        "discord.js": "^12.5.3",
+        "discord.js": "^14.16.3",
         "ext-list": "^4.0.0",
         "file-type": "^16.5.4",
+        "https-proxy-agent": "^7.0.6",
         "irc-colors": "~1.5.0",
         "irc-upd": "~0.10.0",
         "ishisashiencoding": "^0.4.0",
-        "js-yaml": "^3.14.1",
-        "lru-cache": "^5.1.1",
+        "js-yaml": "^4.1.0",
+        "lru-cache": "^11.0.0",
+        "matrix-bot-sdk": "^0.6.3",
         "oicq-icalingua-plus-plus": "^1.23.80",
-        "request": "~2.88.2",
-        "sharp": "^0.25.4",
+        "sharp": "^0.34.5",
         "string-format": "^2.0.0",
-        "telegraf": "^3.40.0",
+        "telegraf": "^4.16.3",
         "wechat4u": "^0.7.7",
-        "winston": "^3.8.2",
+        "winston": "^3.17.0",
         "xml2js": "^0.4.23"
     },
     "engines": {
-        "node": ">=12.0.0"
+        "node": ">=18.0.0"
     },
     "scripts": {
         "start": "node main.js",

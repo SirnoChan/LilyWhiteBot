@@ -291,7 +291,7 @@ const receive = async (msg) => {
 
         // 檔案
         if (msg.extra.uploads) {
-            output += msg.extra.uploads.map(u => ` ${u.url}`).join();
+            output += msg.extra.uploads.map(u => ` ${u.url}`).join('');
         }
     }
 

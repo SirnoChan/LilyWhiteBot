@@ -7,7 +7,7 @@ RUN apt-get update && apt-get install -y \
   fonts-noto-cjk \
   python3
 
-RUN git clone https://github.com/Zokhoi/LilyWhiteBot.git /home/node/lwb
+RUN git clone -b zokhoi https://github.com/SirnoChan/LilyWhiteBot.git /home/node/lwb
 
 WORKDIR "/home/node/lwb"
 RUN npm install
