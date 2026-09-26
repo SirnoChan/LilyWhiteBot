@@ -96,6 +96,8 @@ QQ:
     nickStyle: groupcard                    # 暱稱，可取「groupcard」（優先採用群名片）、「nick」（優先採用暱稱）、「qq」（只用 QQ 號）
     showTitle: false                        # 轉發時顯示頭銜（被@者不會顯示）
     multiMsgId: true                        # 合併轉發消息提供消息id，可使用 qqmultimsg 插件查詢合併轉發消息完整內容
+    # pathMap:                              # OneBot 端上報本地檔案路徑（如影片）時，映射為本機可讀路徑。
+    #   "/app/.config/QQ": "/var/lib/docker/volumes/容器卷/_data"   # 例如 NapCat 跑在 docker 裏的情形
     # CoolQPro: false                       # 如使用 CoolQ Pro，开启此参数后可直接发送图片（仅限使用 HTTP API 插件。另外 Air 版无效）
 
 Discord:

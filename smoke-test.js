@@ -257,7 +257,32 @@ console.log('[2] transport loaded, map keys:', Object.keys(bridge.map).join(' | 
     // ------------------------------------------------ Discord splitText
     let parts = discordHandler.splitText('a'.repeat(2500) + '\nshort line', 2000);
     assert.ok(parts.length >= 2 && parts[0].length <= 2000, 'splitText respects limit');
-    console.log("[9] Discord splitText OK");
+    console.log('[9] Discord splitText OK');
+
+    // ------------------------------------------------ QQ 本地文件路径映射
+    const QQOnebot11MessageHandler = require('./lib/handlers/QQOnebot11MessageHandler.js');
+    const qqHandler = new QQOnebot11MessageHandler({
+        bot: { apiRoot: 'http://127.0.0.1:59999/', qq: '10000' },
+        options: {
+            pathMap: {
+                '/app/.config/QQ': '/var/lib/docker/volumes/fakevol/_data',
+                '/app/.config/QQ/videos': '/srv/videos',
+            },
+        },
+    });
+    assert.strictEqual(
+        qqHandler._mapLocalPath('/app/.config/QQ/nt_qq_xxx/nt_data/Video/2026-09/Ori/abc.mp4'),
+        '/var/lib/docker/volumes/fakevol/_data/nt_qq_xxx/nt_data/Video/2026-09/Ori/abc.mp4',
+        'basic mapping');
+    assert.strictEqual(
+        qqHandler._mapLocalPath('/app/.config/QQ/videos/clip.mp4'),
+        '/srv/videos/clip.mp4',
+        'longest-prefix mapping wins');
+    assert.strictEqual(
+        qqHandler._mapLocalPath('/other/path/file.mp4'),
+        '/other/path/file.mp4',
+        'unmapped path returned as-is');
+    console.log('[10] QQ local path mapping OK');
 
     console.log('\nALL SMOKE TESTS PASSED');
     process.exit(0);
