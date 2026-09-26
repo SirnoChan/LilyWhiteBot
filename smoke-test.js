@@ -10,6 +10,7 @@
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
 
 const assert = require('assert');
+const fs = require('fs');
 const winston = require('winston');
 winston.level = 'error';
 
@@ -283,6 +284,38 @@ console.log('[2] transport loaded, map keys:', Object.keys(bridge.map).join(' | 
         '/other/path/file.mp4',
         'unmapped path returned as-is');
     console.log('[10] QQ local path mapping OK');
+
+    // ------------------------------------------------ QQ get_file 视频获取（mock CQHttp）
+    const os = require('os');
+    const pathMod = require('path');
+    const tmpDir = fs.mkdtempSync(pathMod.join(os.tmpdir(), 'lwb-video-'));
+    const norm = (p) => p.replace(/\\/g, '/');
+    qqHandler._pathMap = { '/app/.config/QQ': tmpDir };  // 让映射目标指向本机临时目录
+    const fakeContainerPath = '/app/.config/QQ/test.mp4';
+    fs.writeFileSync(pathMod.join(tmpDir, 'test.mp4'), 'fake-video-content');
+
+    // 情形1：get_file 返回本地路径（映射后存在）
+    qqHandler._client = async (action, params) => {
+        assert.strictEqual(action, 'get_file');
+        assert.strictEqual(params.file_id, 'nya.mp4');
+        return { file: fakeContainerPath, url: fakeContainerPath, file_size: 100 };
+    };
+    let r1 = await qqHandler._fetchVideoFile(fakeContainerPath, [{ file: 'nya.mp4', url: fakeContainerPath }]);
+    assert.ok(r1 && r1.path, 'get_file returns a path');
+    assert.strictEqual(norm(r1.path), norm(pathMod.join(tmpDir, 'test.mp4')), 'path mapped into tmpDir');
+
+    // 情形2：get_file 返回 http 链接
+    qqHandler._client = async () => ({ url: 'https://cdn.example.invalid/v.mp4' });
+    let r2 = await qqHandler._fetchVideoFile(fakeContainerPath, [{ file: 'nya.mp4', url: fakeContainerPath }]);
+    assert.deepStrictEqual(r2, { url: 'https://cdn.example.invalid/v.mp4' }, 'get_file http url');
+
+    // 情形3：API 抛错 → null
+    qqHandler._client = async () => { throw new Error('boom'); };
+    let r3 = await qqHandler._fetchVideoFile(fakeContainerPath, [{ file: 'nya.mp4', url: fakeContainerPath }]);
+    assert.strictEqual(r3, null, 'get_file error returns null');
+
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+    console.log('[11] QQ get_file video fetching OK');
 
     console.log('\nALL SMOKE TESTS PASSED');
     process.exit(0);

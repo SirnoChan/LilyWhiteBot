@@ -202,7 +202,7 @@ const uploadToHost = async (host, file) => {
         method: 'POST',
         headers: headers,
         body: formData,
-        signal: AbortSignal.timeout(timeout + 30000),  // 上传需要额外的时间余量
+        signal: AbortSignal.timeout(timeout + 120000),  // 上传需要额外的时间余量
     });
 
     if (!res.ok) {
@@ -259,7 +259,7 @@ const uploadToLinx = async (file) => {
             'Content-Type': 'application/octet-stream',
         },
         body: pendingFile,
-        signal: AbortSignal.timeout((servemedia.timeout || 3000) + 30000),
+        signal: AbortSignal.timeout((servemedia.timeout || 3000) + 120000),
     });
 
     if (!res.ok) {
