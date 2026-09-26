@@ -254,6 +254,11 @@ transport:
       forwardBots:
         Repeater: 1202
 
+    QQ:
+      # 合併轉發消息處理：自動拉取內容並將摘要轉發到其他群組（false 關閉，只顯示「合併轉發消息」）
+      forwardSummary: true
+      forwardSummaryLines: 5                   # 摘要最多顯示的條數
+
     Matrix: {}                                # Matrix 暫無特殊選項（通知類功能後續版本加入）
 
     # 其他设置

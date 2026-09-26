@@ -92,7 +92,7 @@ const init = (b, h, c) => {
      * 傳話
      */
     // 將訊息加工好並發送給其他群組
-    qqHandler.on('text', (context) => {
+    qqHandler.on('text', async (context) => {
         const send = () => bridge.send(context).catch(e => winston.error(e.stack));
 
         // // 「應用消息」
@@ -110,6 +110,34 @@ const init = (b, h, c) => {
             let { realNick, realText } = parseForwardBot(extra.reply.message, messageStyle);
             if (realText) {
                 [extra.reply.nick, extra.reply.message] = [realNick, realText];
+            }
+        }
+
+        // 合併轉發消息：自動拉取內容，生成摘要一併轉發（可用 forwardSummary: false 關閉）
+        if (context.extra.forward && context.extra.forward.length && options.forwardSummary !== false) {
+            try {
+                let { data } = await qqHandler.getForwardMsg(context.extra.forward[0]);
+                let messages = (data && data.messages) || [];
+                if (messages.length) {
+                    let limit = options.forwardSummaryLines || 5;
+                    let lines = [];
+                    for (let m of messages.slice(0, limit)) {
+                        let nick = (m.sender && (m.sender.card || m.sender.nickname)) || '';
+                        let content = m.content || m.message || [];
+                        let text = typeof content === 'string' ? content : (qqHandler.parseMessage(content).text || '');
+                        text = String(text).replace(/\n/gu, ' ');
+                        if (text.length > 30) {
+                            text = text.slice(0, 30) + '…';
+                        }
+                        lines.push(`> ${nick}: ${text}`);
+                    }
+                    if (messages.length > limit) {
+                        lines.push(`……共 ${messages.length} 条`);
+                    }
+                    context.text = `「合并转发 ${messages.length} 条」\n` + lines.join('\n') + (context.text.match(/\[私聊机器人使用 !qmulti/) ? '\n' + context.text.match(/\[私聊机器人使用 !qmulti[^\]]*\]/)[0] : '');
+                }
+            } catch (e) {
+                winston.warn(`Failed to fetch forward msg summary: ${e.message}`);
             }
         }
 
@@ -314,13 +342,14 @@ const receive = async (msg) => {
     let output = format(template, meta);
     let useragent = config.options.servemedia.userAgent || USERAGENT;
     let headers = JSON.stringify({'User-Agent': useragent});
+    let mediaMessages = [];
     for (let upload of (msg.extra.uploads || [])) {
         if (upload.type === 'audio') {
-            output += '\n' + `[CQ:record,file=${upload.url},headers=${headers}]`;
+            mediaMessages.push(`[CQ:record,file=${upload.url},headers=${headers}]`);
         } else if (upload.type === 'image') {
             output += '\n' + `[CQ:image,file=${upload.url},headers=${headers}]`;
         } else if (upload.type === 'video') {
-            output += '\n' + `[CQ:video,file=${upload.url},headers=${headers}]`;
+            mediaMessages.push(`[CQ:video,file=${upload.url},headers=${headers}]`);
         } else {
             output += '\n' + upload.url;
         }
@@ -329,6 +358,14 @@ const receive = async (msg) => {
     await qqHandler.say(msg.to, output, {
         noEscape: true
     });
+
+    // 影片/語音在 NT QQ 中以卡片形式渲染、同條消息中的文字不會顯示，
+    // 故單獨發送（說話人資訊在上面那條文字消息中）
+    for (let media of mediaMessages) {
+        await qqHandler.say(msg.to, media, {
+            noEscape: true
+        });
+    }
 };
 
 module.exports = {
