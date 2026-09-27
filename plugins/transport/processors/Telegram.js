@@ -189,7 +189,13 @@ const receive = async (msg) => {
 
         for (let upload of msg.extra.uploads) {
             if (upload.type === 'audio') {
-                await tgHandler.sendAudio(msg.to, upload.url, replyOption);
+                try {
+                    await tgHandler.sendAudio(msg.to, upload.url, replyOption);
+                } catch (e) {
+                    // Telegram 以 URL 抓取檔案限 20MB，超限或抓取失敗時以連結兜底
+                    winston.warn(`TelegramBot failed to send audio, falling back to URL: ${e.message}`);
+                    await tgHandler.say(msg.to, upload.url);
+                }
             } else if (upload.type === 'image') {
                 if (path.extname(upload.url) === '.gif') {
                     await tgHandler.sendAnimation(msg.to, upload.url, replyOption);
@@ -201,11 +207,20 @@ const receive = async (msg) => {
                 try {
                     await tgHandler.sendVideo(msg.to, upload.url, replyOption);
                 } catch (e) {
-                    winston.warn(`TelegramBot failed to send video, falling back to document: ${e.message}`);
-                    await tgHandler.sendDocument(msg.to, upload.url, replyOption);
+                    try {
+                        await tgHandler.sendDocument(msg.to, upload.url, replyOption);
+                    } catch (e2) {
+                        winston.warn(`TelegramBot failed to send video as both video and document, falling back to URL: ${e2.message}`);
+                        await tgHandler.say(msg.to, upload.url);
+                    }
                 }
             } else {
-                await tgHandler.sendDocument(msg.to, upload.url, replyOption);
+                try {
+                    await tgHandler.sendDocument(msg.to, upload.url, replyOption);
+                } catch (e) {
+                    winston.warn(`TelegramBot failed to send document, falling back to URL: ${e.message}`);
+                    await tgHandler.say(msg.to, upload.url);
+                }
             }
         }
     }
