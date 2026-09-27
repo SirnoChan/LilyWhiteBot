@@ -53,6 +53,8 @@ Telegram:
   options:
     nickStyle: username                     # 在其他群組中如何辨識使用者名稱：可取「username」（優先採用使用者名稱）、
                                             # 「fullname」（優先採用全名）、「firstname」（優先採用 First Name）
+    albumDelay: 1000                        # 相簿（一次發送多張圖/影片）聚合轉發的等待視窗（毫秒），
+                                            # 0 為停用（每張獨立轉發）
 
 # QQ 注意事项：
 # 可使用外置客戶端如[Mirai](https://github.com/mamoe/mirai)與[OneBot Mirai](https://github.com/yyuueexxiinngg/onebot-kotlin)配合使用；
@@ -147,7 +149,19 @@ plugins:
                                             # 可在正式連接之前啟用該套件，然後在 Telegram 群中使用 /thisgroupid 取得ID
   - ircquery                                # 允許查詢 IRC 的一些訊息
   - irccommand                              # 允許向 IRC 發送一些命令（注意，不是 IRC 命令而是給頻道內機器人使用的命令）
+  - linkclean                               # 展開短鏈（b23.tv、t.cn 等）並清理連結中的追蹤參數（utm_* 等）
   - pia
+
+# 展開短鏈與清理追蹤參數（linkclean 插件）
+linkclean:
+  expandShortlinks: true                    # 是否展開短鏈
+  timeout: 5000                             # 展開短鏈的超時（毫秒）
+  # shortDomains: []                        # 追加自訂短鏈域名
+  # trackingParams: []                      # 追加自訂追蹤參數名（全域生效）
+  # domains:                                # 按域名自訂要刪除/保留的參數（覆蓋內建規則）
+  #   "example.com":
+  #     drop: ["sid", "ref"]                # 該域名下要刪除的參數
+  #     # keep: ["id"]                      # 或者：白名單之外的參數全刪
 
 # 各插件（套件）设置
 transport:

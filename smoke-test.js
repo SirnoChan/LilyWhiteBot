@@ -317,6 +317,30 @@ console.log('[2] transport loaded, map keys:', Object.keys(bridge.map).join(' | 
     fs.rmSync(tmpDir, { recursive: true, force: true });
     console.log('[11] QQ get_file video fetching OK');
 
+    // ------------------------------------------------ linkclean 插件（追踪参数清理）
+    require('./plugins/linkclean.js')({ plugins: { transport: bridge2 }, global: {} }, {});
+    calls.matrix.length = 0;
+    let linkCtx = new Context({
+        from: 'user1',
+        to: '111',
+        nick: 'Tester',
+        text: '看这个 https://www.bilibili.com/video/BV1xx411c7mD?spm_id_from=333.788&share_source=copy_web&p=2 和 https://example.org/page?utm_source=chat&utm_medium=x&id=9 好看',
+        isPrivate: false,
+        extra: {},
+        handler: discordHandler,
+    });
+    await bridge2.send(linkCtx);
+
+    assert.ok(calls.matrix.length >= 1, 'linkclean test message routed');
+    let outText = calls.matrix.map(c => c.message).join(' ');
+    assert.ok(!outText.includes('spm_id_from'), 'spm_id_from removed');
+    assert.ok(!outText.includes('share_source'), 'share_source removed');
+    assert.ok(!outText.includes('utm_source'), 'utm_source removed');
+    assert.ok(outText.includes('p=2'), 'bilibili p=2 kept');
+    assert.ok(outText.includes('BV1xx411c7mD'), 'video id kept');
+    assert.ok(outText.includes('id=9'), 'generic id param kept');
+    console.log('[12] linkclean tracking param cleanup OK');
+
     console.log('\nALL SMOKE TESTS PASSED');
     process.exit(0);
 })().catch(e => {
