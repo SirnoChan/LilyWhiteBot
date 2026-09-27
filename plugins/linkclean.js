@@ -54,14 +54,20 @@ const BUILTIN_TRACKING_PARAMS = [
     'xptdk', 'scm', 'pdt', 'pdist', 'scene',
 ];
 
-// 按域名的內建規則（過於通用的參數名放在這裡，避免誤傷其他網站）
+// 按域名的內建規則
+// keep：白名單之外的參數全刪（適合分享連結垃圾參數成堆的站點）
+// drop：只刪列出的參數（適合過於通用、不能全域生效的參數名）
 const BUILTIN_DOMAIN_RULES = {
-    'weibo.com': { drop: ['from', 'rid', 's', 'ua', 'ext', 'luicode', 'lfid', 'u_code', 'extparam', 'commentid', 'retcode', 'origin_uri'] },
-    'weibo.cn': { drop: ['from', 'rid', 's', 'ua', 'ext', 'luicode', 'lfid', 'u_code', 'extparam'] },
-    'xiaohongshu.com': { drop: ['xsec_token', 'xsec_source', 'source_note_id'] },
-    'douyin.com': { drop: ['previous_page', 'fromt', 'utm_source', 'utm_medium', 'utm_campaign'] },
-    'taobao.com': { drop: ['pdd', 'pvid', 'scm', 'union_lens', 'spread', 'suid'] },
-    'jd.com': { drop: ['pvid', 'scm', 'utm_source', 'utm_medium', 'utm_campaign', 'utm_term'] },
+    'bilibili.com': { keep: ['p', 't'] },  // 只保留分P與跳轉時間；buvid/spmid/from_spmid/mid/plat_id/timestamp 等全刪
+    'weibo.com': { keep: [] },
+    'weibo.cn': { keep: [] },
+    'xiaohongshu.com': { keep: ['xsec_token', 'xsec_source'] },
+    'douyin.com': { keep: ['modal_id', 'previous_page'] },
+    'youtube.com': { keep: ['v', 't', 'list', 'index', 'start'] },
+    'youtu.be': { keep: ['t'] },
+    'x.com': { keep: [] },
+    'twitter.com': { keep: [] },
+    'zhihu.com': { keep: [] },
 };
 
 const UTM_PREFIX = /^utm_/iu;
