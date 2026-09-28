@@ -88,6 +88,11 @@ const init = (b, h, c) => {
         options.notify = {};
     }
 
+    // 訊息撤回：QQ 用戶撤回自己（已被轉發過）的訊息時，撤回各平台的轉發
+    qqHandler.on('recall', (data) => {
+        bridge.recall('QQ', data.nativeId);
+    });
+
     /*
      * 傳話
      */
@@ -355,17 +360,42 @@ const receive = async (msg) => {
         }
     }
 
-    await qqHandler.say(msg.to, output, {
+    let sentIds = [];
+    const record = (r) => {
+        if (r && r.message_id !== undefined) {
+            sentIds.push({ chat: msg.to, id: r.message_id });
+        }
+        return r;
+    };
+
+    // 原生回復：被回覆的是 bot 轉發的訊息時，以 QQ 原生回覆（CQ:reply）引用
+    let replyId;
+    if (msg.extra.reply && msg.extra.reply._isBot && msg.extra.reply._id !== undefined) {
+        let ref = bridge.replyRef(msg.handler.type, msg.extra.reply._id, 'QQ');
+        if (ref !== undefined) {
+            replyId = ref;
+        }
+    }
+    if (replyId !== undefined) {
+        output = `[CQ:reply,id=${replyId}]` + output;
+        for (let i = 0; i < mediaMessages.length; i++) {
+            mediaMessages[i] = `[CQ:reply,id=${replyId}]` + mediaMessages[i];
+        }
+    }
+
+    record(await qqHandler.say(msg.to, output, {
         noEscape: true
-    });
+    }));
 
     // 影片/語音在 NT QQ 中以卡片形式渲染、同條消息中的文字不會顯示，
     // 故單獨發送（說話人資訊在上面那條文字消息中）
     for (let media of mediaMessages) {
-        await qqHandler.say(msg.to, media, {
+        record(await qqHandler.say(msg.to, media, {
             noEscape: true
-        });
+        }));
     }
+
+    return sentIds;
 };
 
 module.exports = {

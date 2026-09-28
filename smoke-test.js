@@ -340,6 +340,69 @@ console.log('[2] transport loaded, map keys:', Object.keys(bridge.map).join(' | 
     assert.ok(outText.includes('id=9'), 'generic id param kept');
     console.log('[12] linkclean tracking param cleanup OK');
 
+    // ------------------------------------------------ 跨平台回复与撤回
+    // mock 各平台的 say 返回消息 ID、deleteMessage 记录调用
+    let dSeq = 0, tSeq = 0, mSeq = 0;
+    discordHandler.say = async (target, message, options = {}) => {
+        calls.discord.push({ target, message, options });
+        return { id: `d-msg-${++dSeq}` };
+    };
+    discordHandler.deleteMessage = async (ref) => { calls.discord.push({ deleted: ref }); };
+    telegramHandler.sayWithHTML = async (target, message, options = {}) => {
+        calls.telegram.push({ target, message, options });
+        return { message_id: ++tSeq };
+    };
+    telegramHandler.deleteMessage = async (ref) => { calls.telegram.push({ deleted: ref }); };
+    matrixHandler.sayWithHTML = async (target, message, formattedBody, options = {}) => {
+        calls.matrix.push({ target, message, options });
+        return `$evt-${++mSeq}`;
+    };
+    matrixHandler.deleteMessage = async (ref) => { calls.matrix.push({ deleted: ref }); };
+
+    // 1. Discord 用户发一条消息（_nativeId: d-src-1），应记录各平台转发 ID
+    calls.matrix.length = 0; calls.telegram.length = 0; calls.discord.length = 0;
+    let srcCtx = new Context({
+        from: 'u1', to: '111', nick: 'DiscordUser', text: 'to be replied',
+        isPrivate: false, extra: {}, handler: discordHandler, _rawdata: {},
+    });
+    srcCtx._nativeId = 'd-src-1';
+    await bridge.send(srcCtx);
+
+    let entry = bridge.lookupSent('Discord', 'd-src-1');
+    assert.ok(entry, 'forward index has source entry');
+    assert.ok(entry.sent.get('Telegram') && entry.sent.get('Telegram').length === 1, 'telegram id recorded');
+    assert.ok(entry.sent.get('Matrix') && entry.sent.get('Matrix').length === 1, 'matrix id recorded');
+    let tgBotMsgId = entry.sent.get('Telegram')[0].id;
+    assert.ok(bridge.lookupByForwardId('Telegram', tgBotMsgId), 'reverse index resolves');
+
+    // 2. Telegram 用户回复 bot 的转发消息 → 目标平台（Discord/Matrix）应带原生回复引用
+    calls.matrix.length = 0; calls.telegram.length = 0; calls.discord.length = 0;
+    let replyCtx = new Context({
+        from: 'tu1', to: '-222', nick: 'TgUser', text: 'a cross-platform reply',
+        isPrivate: false,
+        extra: {
+            reply: { nick: 'DiscordUser', username: 'Lily_White_Bot', message: 'to be replied', isText: true, _id: tgBotMsgId, _isBot: true },
+        },
+        handler: telegramHandler, _rawdata: {},
+    });
+    replyCtx._nativeId = 'tg-src-2';
+    await bridge.send(replyCtx);
+
+    assert.strictEqual(calls.telegram.length, 0, 'telegram is the source, no send on it');
+    let mxSend = calls.matrix.find(c => c.options && c.options.replyTo);
+    assert.ok(mxSend && mxSend.options.replyTo === entry.sent.get('Matrix')[0].id, 'matrix native reply references bot message');
+    let dcSend = calls.discord.find(c => c.options && c.options.reference);
+    assert.ok(dcSend && dcSend.options.reference === 'd-src-1', 'discord native reply references original user message (source platform)');
+
+    // 3. Discord 用户删除自己的源消息 → 各平台 bot 消息被删除
+    calls.matrix.length = 0; calls.telegram.length = 0; calls.discord.length = 0;
+    discordHandler.emit('recall', { nativeId: 'd-src-1' });
+    await new Promise(r => setTimeout(r, 100));
+
+    assert.ok(calls.telegram.some(c => c.deleted && c.deleted.id === tgBotMsgId), 'telegram bot message deleted');
+    assert.ok(calls.matrix.some(c => c.deleted && c.deleted.id === entry.sent.get('Matrix')[0].id), 'matrix bot message deleted');
+    console.log('[13] cross-platform reply and recall OK');
+
     console.log('\nALL SMOKE TESTS PASSED');
     process.exit(0);
 })().catch(e => {

@@ -32,6 +32,13 @@ class BridgeMsg extends Context {
             this.to = this.to;
         }
 
+        // 源訊息在其平台上的原生 ID（供跨平台回復/撤回映射使用）
+        if (overrides._nativeId !== undefined) {
+            this._nativeId = overrides._nativeId;
+        } else if (context._nativeId !== undefined) {
+            this._nativeId = context._nativeId;
+        }
+
         for (let k of ['isNotice', 'from_uid', 'to_uid']) {
             if (overrides[k] !== undefined) {
                 this[k] = overrides[k];

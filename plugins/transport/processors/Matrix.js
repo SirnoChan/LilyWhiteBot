@@ -32,6 +32,11 @@ const init = (b, h, c) => {
 
     options = config.options.Matrix || {};
 
+    // 訊息撤回：Matrix 用戶 redact 自己（已被轉發過）的訊息時，撤回各平台的轉發
+    matrixHandler.on('recall', (data) => {
+        bridge.recall('Matrix', data.nativeId);
+    });
+
     // 將訊息加工好並發送給其他群組
     matrixHandler.on('text', (context) => {
         bridge.send(context).catch(e => winston.error(e.stack || e.message));
@@ -88,6 +93,22 @@ const receive = async (msg) => {
 
     let output = format(template, meta);
 
+    let sentIds = [];
+    const record = (eventId) => {
+        if (eventId) {
+            sentIds.push({ room: msg.to, id: eventId });
+        }
+    };
+
+    // 原生回復：被回覆的是 bot 轉發的訊息時，引用本平台對應的訊息（源平台則引用用戶原訊息）
+    let sayOptions = {};
+    if (msg.extra.reply && msg.extra.reply._isBot && msg.extra.reply._id !== undefined) {
+        let ref = bridge.replyRef(msg.handler.type, msg.extra.reply._id, 'Matrix');
+        if (ref !== undefined) {
+            sayOptions.replyTo = ref;
+        }
+    }
+
     // 同時發送 HTML 格式（Element 等用戶端會優先顯示）
     let metaHTML = Object.assign({}, meta, {
         nick: `<strong>${htmlEscape(msg.nick)}</strong>`,
@@ -116,17 +137,19 @@ const receive = async (msg) => {
 
     let mainMessage = `${output}${attachFileUrls}`;
     if (mainMessage.trim() !== '') {
-        await matrixHandler.sayWithHTML(msg.to, mainMessage, `${outputHTML}${attachFileUrls ? htmlEscape(attachFileUrls) : ''}`);
+        record(await matrixHandler.sayWithHTML(msg.to, mainMessage, `${outputHTML}${attachFileUrls ? htmlEscape(attachFileUrls) : ''}`, sayOptions));
     }
 
     for (let media of pendingMedia) {
         try {
-            await matrixHandler.sendMediaFromUrl(msg.to, media.url, media.type, media.info);
+            record(await matrixHandler.sendMediaFromUrl(msg.to, media.url, media.type, media.info));
         } catch (e) {
             winston.warn(`MatrixBot failed to send media ${media.url}, falling back to URL: ${e.message}`);
-            await matrixHandler.say(msg.to, media.url);
+            record(await matrixHandler.say(msg.to, media.url));
         }
     }
+
+    return sentIds;
 };
 
 module.exports = {

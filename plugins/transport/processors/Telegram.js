@@ -179,7 +179,26 @@ const receive = async (msg) => {
 
     template = htmlEscape(template);
     let output = format(template, meta);
-    let newRawMsg = await tgHandler.sayWithHTML(msg.to, output);
+
+    let sentIds = [];
+    const record = (m) => {
+        if (m && m.message_id !== undefined) {
+            sentIds.push({ chat: msg.to, id: m.message_id });
+        }
+        return m;
+    };
+
+    // 原生回復：被回覆的是 bot 轉發的訊息時，引用本平台對應的訊息（源平台則引用用戶原訊息）
+    let nativeReplyOption = {};
+    if (msg.extra.reply && msg.extra.reply._isBot && msg.extra.reply._id !== undefined) {
+        let ref = bridge.replyRef(msg.handler.type, msg.extra.reply._id, 'Telegram');
+        if (ref !== undefined) {
+            nativeReplyOption.reply_to_message_id = ref;
+        }
+    }
+
+    let newRawMsg = await tgHandler.sayWithHTML(msg.to, output, nativeReplyOption);
+    record(newRawMsg);
 
     // 如果含有相片和音訊
     if (msg.extra.uploads) {
@@ -190,40 +209,42 @@ const receive = async (msg) => {
         for (let upload of msg.extra.uploads) {
             if (upload.type === 'audio') {
                 try {
-                    await tgHandler.sendAudio(msg.to, upload.url, replyOption);
+                    record(await tgHandler.sendAudio(msg.to, upload.url, replyOption));
                 } catch (e) {
                     // Telegram 以 URL 抓取檔案限 20MB，超限或抓取失敗時以連結兜底
                     winston.warn(`TelegramBot failed to send audio, falling back to URL: ${e.message}`);
-                    await tgHandler.say(msg.to, upload.url);
+                    record(await tgHandler.say(msg.to, upload.url));
                 }
             } else if (upload.type === 'image') {
                 if (path.extname(upload.url) === '.gif') {
-                    await tgHandler.sendAnimation(msg.to, upload.url, replyOption);
+                    record(await tgHandler.sendAnimation(msg.to, upload.url, replyOption));
                 } else {
-                    await tgHandler.sendPhoto(msg.to, upload.url, replyOption);
+                    record(await tgHandler.sendPhoto(msg.to, upload.url, replyOption));
                 }
             } else if (upload.type === 'video') {
                 // 以影片形式傳送（Telegram 伺服器自行從 URL 抓取），用戶端內嵌播放
                 try {
-                    await tgHandler.sendVideo(msg.to, upload.url, replyOption);
+                    record(await tgHandler.sendVideo(msg.to, upload.url, replyOption));
                 } catch (e) {
                     try {
-                        await tgHandler.sendDocument(msg.to, upload.url, replyOption);
+                        record(await tgHandler.sendDocument(msg.to, upload.url, replyOption));
                     } catch (e2) {
                         winston.warn(`TelegramBot failed to send video as both video and document, falling back to URL: ${e2.message}`);
-                        await tgHandler.say(msg.to, upload.url);
+                        record(await tgHandler.say(msg.to, upload.url));
                     }
                 }
             } else {
                 try {
-                    await tgHandler.sendDocument(msg.to, upload.url, replyOption);
+                    record(await tgHandler.sendDocument(msg.to, upload.url, replyOption));
                 } catch (e) {
                     winston.warn(`TelegramBot failed to send document, falling back to URL: ${e.message}`);
-                    await tgHandler.say(msg.to, upload.url);
+                    record(await tgHandler.say(msg.to, upload.url));
                 }
             }
         }
     }
+
+    return sentIds;
 };
 
 module.exports = {

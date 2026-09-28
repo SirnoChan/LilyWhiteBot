@@ -77,6 +77,11 @@ const init = (b, h, c) => {
     options = config.options.Discord || {};
     forwardBots = options.forwardBots || {};
 
+    // 訊息撤回：Discord 用戶刪除自己（已被轉發過）的訊息時，撤回各平台的轉發
+    discordHandler.on('recall', (data) => {
+        bridge.recall('Discord', data.nativeId);
+    });
+
     // 消息样式
     let messageStyle = config.options.messageStyle;
 
@@ -226,6 +231,23 @@ const receive = async (msg) => {
 
     let output = format(template, meta);
 
+    let sentIds = [];
+    const record = (m) => {
+        if (m && m.id !== undefined) {
+            sentIds.push({ channel: msg.to, id: m.id });
+        }
+        return m;
+    };
+
+    // 原生回復：被回覆的是 bot 轉發的訊息時，引用本平台對應的訊息（源平台則引用用戶原訊息）
+    let sayOptions = {};
+    if (msg.extra.reply && msg.extra.reply._isBot && msg.extra.reply._id !== undefined) {
+        let ref = bridge.replyRef(msg.handler.type, msg.extra.reply._id, 'Discord');
+        if (ref !== undefined) {
+            sayOptions.reference = ref;
+        }
+    }
+
     // 影片以附件形式隨訊息發送，Discord 客戶端會直接內嵌播放；其他類型仍以連結顯示
     let videoFiles = [];
     let attachFileUrls = '';
@@ -243,15 +265,16 @@ const receive = async (msg) => {
 
     if (videoFiles.length) {
         try {
-            await discordHandler.say(msg.to, `${output}${attachFileUrls}`, { files: videoFiles });
-            return;
+            record(await discordHandler.say(msg.to, `${output}${attachFileUrls}`, Object.assign({ files: videoFiles }, sayOptions)));
+            return sentIds;
         } catch (e) {
             winston.warn(`DiscordBot failed to send video as attachment, falling back to URL: ${e.message}`);
             attachFileUrls += ` ${videoFiles.map(f => f.attachment).join(' ')}`;
         }
     }
 
-    discordHandler.say(msg.to, `${output}${attachFileUrls}`);
+    record(await discordHandler.say(msg.to, `${output}${attachFileUrls}`, sayOptions));
+    return sentIds;
 };
 
 module.exports = {
