@@ -205,12 +205,16 @@ const bridge = {
     },
 
     /**
-     * 跨平台回復時，目標平台上應被引用的訊息 ID：
+     * 跨平台回復時，目標平台上應被引用的訊息 ID。
+     * 被回覆的訊息既可能是源平台用戶的原生訊息（正查），也可能是 bot 的轉發訊息（反查）；
      * 目標平台即源平台時引用用戶的原生訊息，否則引用 bot 的轉發訊息。
      * 查不到時返回 undefined（退回文字樣式）。
      */
-    replyRef(fromClientType, botMsgId, targetClientType) {
-        let entry = bridge.lookupByForwardId(fromClientType, botMsgId);
+    replyRef(fromClientType, replyId, targetClientType) {
+        if (replyId === undefined || replyId === null) {
+            return undefined;
+        }
+        let entry = bridge.lookupSent(fromClientType, replyId) || bridge.lookupByForwardId(fromClientType, replyId);
         if (!entry || !entry.source) {
             return undefined;
         }

@@ -401,6 +401,24 @@ console.log('[2] transport loaded, map keys:', Object.keys(bridge.map).join(' | 
 
     assert.ok(calls.telegram.some(c => c.deleted && c.deleted.id === tgBotMsgId), 'telegram bot message deleted');
     assert.ok(calls.matrix.some(c => c.deleted && c.deleted.id === entry.sent.get('Matrix')[0].id), 'matrix bot message deleted');
+
+    // 4. 平台内回复：Discord 用户 B 回复用户 A 的源消息 → 其他平台引用 bot 转发的 A 消息
+    calls.matrix.length = 0; calls.telegram.length = 0; calls.discord.length = 0;
+    let intraCtx = new Context({
+        from: 'u2', to: '111', nick: 'DiscordUserB', text: 'replying to A',
+        isPrivate: false,
+        extra: {
+            reply: { nick: 'DiscordUser', username: 'du', message: 'to be replied', isText: true, _id: 'd-src-1', _isBot: false },
+        },
+        handler: discordHandler, _rawdata: {},
+    });
+    intraCtx._nativeId = 'd-src-3';
+    await bridge.send(intraCtx);
+
+    let mxIntra = calls.matrix.find(c => c.options && c.options.replyTo);
+    assert.ok(mxIntra && mxIntra.options.replyTo === entry.sent.get('Matrix')[0].id, 'intra-platform reply: matrix references bot-forwarded original');
+    let tgIntra = calls.telegram.find(c => c.options && c.options.reply_to_message_id !== undefined);
+    assert.ok(tgIntra && tgIntra.options.reply_to_message_id === tgBotMsgId, 'intra-platform reply: telegram references bot-forwarded original');
     console.log('[13] cross-platform reply and recall OK');
 
     console.log('\nALL SMOKE TESTS PASSED');

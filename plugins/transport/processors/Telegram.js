@@ -190,7 +190,7 @@ const receive = async (msg) => {
 
     // 原生回復：被回覆的是 bot 轉發的訊息時，引用本平台對應的訊息（源平台則引用用戶原訊息）
     let nativeReplyOption = {};
-    if (msg.extra.reply && msg.extra.reply._isBot && msg.extra.reply._id !== undefined) {
+    if (msg.extra.reply && msg.extra.reply._id !== undefined) {
         let ref = bridge.replyRef(msg.handler.type, msg.extra.reply._id, 'Telegram');
         if (ref !== undefined) {
             nativeReplyOption.reply_to_message_id = ref;
