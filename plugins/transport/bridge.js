@@ -142,7 +142,7 @@ const bridge = {
             return Promise.all(promises)
                 .catch((e) => {
                     allresolved = false;
-                    winston.error(`[bridge.js] <BotSend> Rejected: `, e);
+                    winston.error(`[bridge.js] <BotSend> Rejected: ${e && e.message ? e.message : e}\n${e && e.stack ? e.stack : ''}`);
                 }).then(() => {
                     bridge.emitHook('bridge.sent', msg);
                     if (promises.length > 0) {
