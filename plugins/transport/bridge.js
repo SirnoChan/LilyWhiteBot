@@ -1,80 +1,15 @@
 'use strict';
 
 const winston = require('winston');
-const { LRUCache } = require('lru-cache');
-const fs = require('fs');
-const path = require('path');
 const Context = require('../../lib/handlers/Context.js');
 const BridgeMsg = require('./BridgeMsg.js');
+const database = require('../../lib/database.js');
 
 let processors = new Map();
 let hooks = {};
 let hooks2 = new WeakMap();
 let map = {};
 let aliases = {};
-
-// 跨平台回復/撤回的基礎：源訊息（平台|原生ID）-> 各平台轉發訊息 ID 的映射
-// sent: Map<clientType, Array<{ chat/channel/room, id }>>
-const MAP_TTL = 24 * 3600 * 1000;
-let msgIndex = new LRUCache({ max: 2000, ttl: MAP_TTL });
-const msgKey = (clientType, nativeId) => `${clientType}|${nativeId}`;
-
-// 反向索引：平台|bot 轉發訊息 ID -> 源訊息鍵（回復場景：用戶回覆的是 bot 的轉發訊息）
-let sentIndex = new LRUCache({ max: 4000, ttl: MAP_TTL });
-
-// 映射表持久化：重啟後跨平台回復/撤回仍然可用
-const mapFile = path.join(__dirname, 'data', 'bridge-map.json');
-let mapDirty = false;
-
-const persistMap = () => {
-    try {
-        fs.mkdirSync(path.dirname(mapFile), { recursive: true });
-        const entries = [];
-        for (const [key, entry] of msgIndex.entries()) {
-            entries.push({
-                key,
-                ts: Date.now(),
-                source: entry.source,
-                sent: [...entry.sent].map(([client, ids]) => [client, ids]),
-            });
-        }
-        fs.writeFileSync(mapFile, JSON.stringify({ savedAt: Date.now(), entries }));
-        mapDirty = false;
-    } catch (e) {
-        winston.warn(`[bridge.js] failed to persist message map: ${e.message}`);
-    }
-};
-
-const restoreMap = () => {
-    try {
-        const data = JSON.parse(fs.readFileSync(mapFile, 'utf8'));
-        const cutoff = Date.now() - MAP_TTL;
-        for (const entry of data.entries || []) {
-            if (!entry.ts || entry.ts < cutoff) continue;
-            msgIndex.set(entry.key, {
-                source: entry.source,
-                sent: new Map(entry.sent),
-            });
-            for (const [targetClient, ids] of entry.sent) {
-                for (const s of ids) {
-                    sentIndex.set(`${targetClient}|${s.id}`, entry.key);
-                }
-            }
-        }
-        winston.info(`[bridge.js] restored ${msgIndex.size} message map entries from disk`);
-    } catch (e) {
-        if (e.code !== 'ENOENT') {
-            winston.warn(`[bridge.js] failed to restore message map: ${e.message}`);
-        }
-    }
-};
-restoreMap();
-
-setInterval(() => {
-    if (mapDirty) persistMap();
-}, 10000).unref();
-process.on('SIGTERM', () => { if (mapDirty) persistMap(); });
-process.on('SIGINT', () => { if (mapDirty) persistMap(); });
 
 // TODO 独立的命令处理
 // let commands = {};
@@ -180,6 +115,8 @@ const bridge = {
                 let new_uid = BridgeMsg.parseUID(t);
                 let client = new_uid.client;
 
+                msg2._sourceChat = msg.to;   // 源訊息所在的聊天（to 被改寫為目標前保存）
+                console.error('DBG loop: t=' + t + ' msg.to=' + msg.to + ' msg2._sourceChat=' + msg2._sourceChat);
                 promises.push(bridge.emitHook('bridge.receive', msg2).then(_ => {
                     let processor = processors.get(client);
                     if (processor) {
@@ -187,7 +124,7 @@ const bridge = {
                         return Promise.resolve(processor.receive(msg2)).then((sentIds) => {
                             // 記錄各平台轉發訊息的 ID，供跨平台回復/撤回使用
                             if (Array.isArray(sentIds) && sentIds.length && msg.handler && msg._nativeId !== undefined) {
-                                bridge.rememberSent(msg.handler.type, msg._nativeId, client, sentIds);
+                bridge.rememberSent(msg.handler.type, msg._nativeId, msg.to, client, sentIds);
                             }
                         });
                     } else {
@@ -213,53 +150,39 @@ const bridge = {
     },
 
     /**
-     * 記錄「源訊息在某平台轉發後的訊息 ID」
+     * 記錄「源訊息在某平台轉發後的訊息 ID」（SQLite）
      */
-    rememberSent(fromClientType, fromNativeId, targetClientType, sentIds) {
+    rememberSent(fromClientType, fromNativeId, fromChat, targetClientType, sentIds) {
         if (fromNativeId === undefined || fromNativeId === null || !Array.isArray(sentIds) || sentIds.length === 0) {
             return;
         }
-
-        let key = msgKey(fromClientType, fromNativeId);
-        let entry = msgIndex.get(key);
-        if (!entry) {
-            entry = {
-                source: { client: fromClientType, id: fromNativeId },
-                sent: new Map(),
-            };
-            msgIndex.set(key, entry);
+        try {
+            database.rememberSent(fromClientType, fromNativeId, fromChat, targetClientType, sentIds);
+        } catch (e) {
+            winston.warn(`[bridge.js] rememberSent failed: ${e.message}`);
         }
-
-        let arr = entry.sent.get(targetClientType) || [];
-        for (let s of sentIds) {
-            if (s && s.id !== undefined) {
-                arr.push(s);
-                sentIndex.set(`${targetClientType}|${s.id}`, key);
-            }
-        }
-        entry.sent.set(targetClientType, arr);
-        mapDirty = true;
     },
 
     /**
-     * 查詢某條源訊息在各平台轉發後的訊息 ID
+     * 查詢某條源訊息在各平台轉發後的訊息 ID（兼容接口，返回 { sent: Map } 形狀）
      */
     lookupSent(fromClientType, fromNativeId) {
-        if (fromNativeId === undefined || fromNativeId === null) {
-            return null;
+        const rows = database.lookupForward(fromClientType, fromNativeId);
+        if (!rows) return null;
+        const sent = new Map();
+        for (const r of rows) {
+            sent.set(r.target_client, [{ chat: r.target_chat, id: r.target_id }]);
         }
-        return msgIndex.get(msgKey(fromClientType, fromNativeId)) || null;
+        return { sent };
     },
 
     /**
-     * 由「bot 在某平台轉發出的訊息 ID」反查源訊息記錄（跨平台回復用）
+     * 由「bot 在某平台轉發出的訊息 ID」反查源訊息（兼容接口，返回 { source } 形狀）
      */
     lookupByForwardId(clientType, botMsgId) {
-        if (botMsgId === undefined || botMsgId === null) {
-            return null;
-        }
-        let key = sentIndex.get(`${clientType}|${botMsgId}`);
-        return key ? (msgIndex.get(key) || null) : null;
+        const rows = database.lookupByForwardId(clientType, botMsgId);
+        if (!rows) return null;
+        return { source: { client: rows[0].source_client, id: rows[0].source_id } };
     },
 
     /**
@@ -268,20 +191,36 @@ const bridge = {
      * 目標平台即源平台時引用用戶的原生訊息，否則引用 bot 的轉發訊息。
      * 查不到時返回 undefined（退回文字樣式）。
      */
-    replyRef(fromClientType, replyId, targetClientType) {
+    replyRef(fromClientType, replyId, chat, targetClientType) {
         if (replyId === undefined || replyId === null) {
             return undefined;
         }
-        let entry = bridge.lookupSent(fromClientType, replyId) || bridge.lookupByForwardId(fromClientType, replyId);
-        if (!entry || !entry.source) {
-            winston.debug(`[bridge.js] <ReplyRef> no map entry for ${msgKey(fromClientType, replyId)} (target ${targetClientType}) - falling back to text style`);
-            return undefined;
+
+        try {
+            // chat = 回復發生的聊天（互聯群組）。反查與正查都限定在該聊天內：
+            // 反查：回復的是 bot 的轉發訊息；正查：回復的是源平台用戶的原生訊息
+            const srcRows = database.lookupByForwardId(fromClientType, replyId, chat);
+            if (srcRows && srcRows.length) {
+                const source = srcRows[0];
+                if (source.source_client === targetClientType) {
+                    return source.source_id;
+                }
+                const fwd = database.lookupForward(source.source_client, source.source_id, source.source_chat) || [];
+                const hit = fwd.find(r => r.target_client === targetClientType);
+                return hit ? hit.target_id : undefined;
+            }
+
+            const fwdRows = database.lookupForward(fromClientType, replyId, chat);
+            if (fwdRows && fwdRows.length) {
+                const hit = fwdRows.find(r => r.target_client === targetClientType);
+                return hit ? hit.target_id : undefined;
+            }
+        } catch (e) {
+            winston.warn(`[bridge.js] replyRef query failed: ${e.message}`);
         }
-        if (entry.source.client === targetClientType) {
-            return entry.source.id;
-        }
-        let ids = entry.sent.get(targetClientType);
-        return (ids && ids.length) ? ids[0].id : undefined;
+
+        winston.debug(`[bridge.js] <ReplyRef> no map entry for ${fromClientType}|${replyId} (target ${targetClientType}) - falling back to text style`);
+        return undefined;
     },
 
     /**
@@ -289,24 +228,23 @@ const bridge = {
      * 返回是否找到了對應記錄。
      */
     recall(fromClientType, fromNativeId) {
-        let entry = bridge.lookupSent(fromClientType, fromNativeId);
-        if (!entry) {
-            winston.debug(`[bridge.js] <Recall> no record for ${msgKey(fromClientType, fromNativeId)}`);
+        const rows = database.lookupForward(fromClientType, fromNativeId);
+        if (!rows || !rows.length) {
+            winston.debug(`[bridge.js] <Recall> no record for ${fromClientType}|${fromNativeId}`);
             return Promise.resolve(false);
         }
 
-        winston.info(`[bridge.js] <Recall> recalling message ${msgKey(fromClientType, fromNativeId)}`);
+        winston.info(`[bridge.js] <Recall> recalling message ${fromClientType}|${fromNativeId}`);
         let promises = [];
 
-        for (let [clientType, sentIds] of entry.sent) {
-            let handler = bridge.handlers && bridge.handlers.get(clientType);
+        for (let row of rows) {
+            let handler = bridge.handlers && bridge.handlers.get(row.target_client);
             if (handler && typeof handler.deleteMessage === 'function') {
-                for (let s of sentIds) {
-                    promises.push(
-                        Promise.resolve(handler.deleteMessage(s))
-                            .catch(e => winston.warn(`[bridge.js] <Recall> failed on ${clientType}: ${e.message}`))
-                    );
-                }
+                const chat = row.target_chat !== undefined && row.target_chat !== null ? row.target_chat : row.target_id;
+                promises.push(
+                    Promise.resolve(handler.deleteMessage({ id: row.target_id, chat, channel: chat, room: chat }))
+                        .catch(e => winston.warn(`[bridge.js] <Recall> failed on ${row.target_client}: ${e.message}`))
+                );
             }
         }
 

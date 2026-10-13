@@ -347,6 +347,21 @@ transport:
       # type为linx时有效
       linxApiUrl: ""                        # linx API 地址（例如 https://www.xxx.com/upload/），通常以斜线结尾
 
+      # type为s3时有效：上傳到 S3 兼容對象存儲，處理大文件。
+      # 推薦 Cloudflare R2（10GB/月免費 + 下載流量免費 + 生命週期刪除）；
+      # Backblaze B2、Wasabi、阿里雲 OSS 等 S3 兼容存儲亦可。
+      # 文件記錄入數據庫，到期自動從存儲刪除；連結有效期 expiryHours 小時。
+      s3:
+        endpoint: ""                        # S3 端點，如 https://<ACCOUNT_ID>.r2.cloudflarestorage.com
+        region: "auto"                      # 區域（R2 填 auto）
+        bucket: ""                          # 桶名
+        accessKeyId: ""                     # Access Key ID
+        secretAccessKey: ""                 # Secret Access Key
+        keyPrefix: "lwb/"                   # 對象 key 前綴
+        expiryHours: 72                     # 文件保留時長（小時），到期自動刪除並使連結失效
+        # publicBase: ""                    # 可選：公開桶直鏈前綴（如 https://cdn.example.com/lwb/）。
+        #                                   # 設置後用直鏈（需桶開公開讀）；不設置用預簽名鏈接（到期自動失效）
+
       # type为uguu时有效
       uguuApiUrl: ""                        # 请以 /upload.php?output=text 结尾
       

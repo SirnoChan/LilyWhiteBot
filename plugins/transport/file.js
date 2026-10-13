@@ -276,6 +276,56 @@ const uploadToLinx = async (file) => {
 /*
  * 決定檔案去向
  */
+/*
+ * 上傳到 S3 兼容對象存儲（Cloudflare R2 / Backblaze B2 / Wasabi / 阿里雲 OSS 等）。
+ * 連結形式二選一：
+ * - 配置 publicBase：公開桶直鏈（publicBase + key）
+ * - 未配置：presigned GET（有效期 expiryHours 小時，「指定時間後失效」的鏈接層）
+ * 文件記錄入 SQLite（lib/database.js），到期由定時任務從存儲中刪除。
+ */
+const uploadToS3 = async (file) => {
+    const { S3Client, PutObjectCommand, GetObjectCommand } = require('@aws-sdk/client-s3');
+    const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
+
+    const s3 = servemedia.s3 || {};
+    const client = new S3Client({
+        endpoint: s3.endpoint,
+        region: s3.region || 'auto',
+        credentials: {
+            accessKeyId: s3.accessKeyId,
+            secretAccessKey: s3.secretAccessKey,
+        },
+    });
+
+    const crypto = require('crypto');
+    const buf = await streamToBuffer(await getFileStream(file));
+    const ext = path.extname(file.name || file.url || '') || path.extname(file.path || '') || '';
+    const key = (s3.keyPrefix || 'lwb/') + crypto.createHash('md5').update(buf).digest('hex') + ext;
+
+    await client.send(new PutObjectCommand({
+        Bucket: s3.bucket,
+        Key: key,
+        Body: buf,
+        ContentType: file.mime_type || 'application/octet-stream',
+    }));
+
+    const expiryHours = s3.expiryHours || 72;
+    const expiryAt = Date.now() + expiryHours * 3600 * 1000;
+    let url;
+
+    if (s3.publicBase) {
+        url = s3.publicBase.replace(/\/+$/u, '') + '/' + key;
+    } else {
+        url = await getSignedUrl(client, new GetObjectCommand({ Bucket: s3.bucket, Key: key }), { expiresIn: expiryHours * 3600 });
+    }
+
+    // 記錄到數據庫，到期由 database.js 的定時任務刪除對象
+    require('../../lib/database.js').recordUpload(key, url, buf.length, expiryAt);
+    winston.debug(`[file.js] uploaded to S3: ${key} (${buf.length}B, expires in ${expiryHours}h)`);
+
+    return url;
+};
+
 const uploadFile = async (file) => {
     let url;
     let fileType = convertFileType(file.type);
@@ -303,6 +353,10 @@ const uploadFile = async (file) => {
 
         case 'linx':
             url = await uploadToLinx(file);
+            break;
+
+        case 's3':
+            url = await uploadToS3(file);
             break;
 
         case 'source':

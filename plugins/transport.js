@@ -4,6 +4,7 @@
 
 'use strict';
 
+const path = require('path');
 const BridgeMsg = require('./transport/BridgeMsg.js');
 const winston = require('winston');
 
@@ -30,6 +31,11 @@ module.exports = (pluginManager, options) => {
      */
     let bridge = require('./transport/bridge.js');
     BridgeMsg.setHandlers(pluginManager.handlers);
+    // SQLite 持久層：跨平台回復/撤回映射 + 上傳文件記錄（到期自動刪除）
+    require('../lib/database.js').init(
+        path.join(__dirname, 'data'),
+        (options.options.servemedia && options.options.servemedia.type === 's3') ? options.options.servemedia.s3 : null,
+    );
     bridge.BridgeMsg = BridgeMsg;
     bridge.handlers = pluginManager.handlers;
     pluginManager.global.BridgeMsg = BridgeMsg;

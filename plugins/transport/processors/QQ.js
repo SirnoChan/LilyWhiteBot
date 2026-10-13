@@ -117,6 +117,7 @@ const init = (b, h, c) => {
                     client: 'QQ',
                     type: 'file',
                     id: data.fileId,
+                    name: data.name,
                     size: data.size,
                     url: content.url,
                     path: content.path,
@@ -413,7 +414,7 @@ const receive = async (msg) => {
     // 原生回復：被回覆的是 bot 轉發的訊息時，以 QQ 原生回覆（CQ:reply）引用
     let replyId;
     if (msg.extra.reply && msg.extra.reply._id !== undefined) {
-        let ref = bridge.replyRef(msg.handler.type, msg.extra.reply._id, 'QQ');
+        let ref = bridge.replyRef(msg.handler.type, msg.extra.reply._id, msg._sourceChat, 'QQ');
         if (ref !== undefined) {
             replyId = ref;
         }
