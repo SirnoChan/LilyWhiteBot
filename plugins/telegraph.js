@@ -199,6 +199,27 @@ module.exports = (pluginManager, options) => {
         }
     };
 
+    /**
+     * 清洗署名：去掉「关于作者」前缀、回答/文章/关注者等统计数据尾巴，
+     * 以及零宽字符。知乎等站点的作者卡片整块文本能被清理为纯昵称。
+     */
+    const cleanByline = (s) => {
+        if (!s) return '';
+        let t = s.replace(/[\u200b\u200c\u200d\ufeff]/gu, '').trim();
+        t = t.replace(/^关于作者/, '');
+        t = t.replace(/回答\d[\d,，]*\s*文章\d[\d,，]*[\s\S]*$/u, '');
+        t = t.replace(/(?:关注[他她它]\s*)?发私信$/u, '');
+        return t.trim();
+    };
+
+    /**
+     * 从页面标题提取作者（知乎格式：「问题 - 作者 的回答」）。
+     */
+    const authorFromTitle = (docTitle) => {
+        const m = (docTitle || '').match(/[-–—]\s*(.{1,30}?)\s*的回答\s*$/u);
+        return m && m[1];
+    };
+
     const convert = async (context, rawUrl) => {
         let url;
         try {
@@ -243,7 +264,7 @@ module.exports = (pluginManager, options) => {
             // jina 返回的已是提取後的正文，Readability 失敗時直接轉換其 HTML
             if (!article || !article.content) {
                 if (via === 'jina') {
-                    article = { title: url.toString(), content: html };
+                    article = { title: docTitle || url.toString(), content: html };
                 } else {
                     throw new Error('無法提取正文（頁面可能需要登錄或為動態渲染）');
                 }
@@ -258,8 +279,12 @@ module.exports = (pluginManager, options) => {
                 nodes.push('…（內容過長，已截斷）');
             }
 
-            // 署名：原作者（原網站名），署名鏈接指向原文
-            const byline = (article.byline || metaAuthor || '').replace(/^\s*(?:作者|撰文|文)[\/：:\s]+/iu, '').trim();
+            // 署名：原作者（原網站名），署名鏈接指向原文。
+            // 作者優先級：頁面標題的知乎格式 > Readability/meta 的 byline（清洗後）> 網站名
+            const docTitle = dom.window.document.title || '';
+            const byline = cleanByline(authorFromTitle(docTitle)
+                || (article.byline && article.byline !== docTitle ? article.byline : '')
+                || metaAuthor);
             const authorLine = byline ? `${byline}（${siteName}）` : `${siteName}`;
 
             const acc = await loadAccount();
