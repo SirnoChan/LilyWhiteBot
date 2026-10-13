@@ -158,6 +158,46 @@ module.exports = (pluginManager, options) => {
 
     const authorName = options.authorName || 'LilyWhiteBot';
     const maxChars = options.maxChars === undefined ? 60000 : options.maxChars;
+    const jinaFallback = options.jinaFallback !== false;
+
+    /**
+     * 抓取页面 HTML。直接抓取失败（403 等反爬拦截）时，
+     * 回退到 r.jina.ai（Jina Reader，住宅代理池，可绕过大部分站点反爬）。
+     */
+    const fetchPageHtml = async (pageUrl) => {
+        try {
+            const controller = new AbortController();
+            const timer = setTimeout(() => controller.abort(), 20000);
+            const res = await fetch(pageUrl, {
+                headers: {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+                    'Accept': 'text/html,application/xhtml+xml',
+                    'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+                },
+                signal: controller.signal,
+                redirect: 'follow',
+            });
+            clearTimeout(timer);
+            if (!res.ok) {
+                throw new Error(`HTTP ${res.status}`);
+            }
+            return { html: await res.text(), via: 'direct' };
+        } catch (e) {
+            if (!jinaFallback) throw e;
+            winston.info(`[telegraph] direct fetch failed (${e.message}), trying r.jina.ai fallback`);
+            const controller = new AbortController();
+            const timer = setTimeout(() => controller.abort(), 60000);
+            const res = await fetch(`https://r.jina.ai/${pageUrl}`, {
+                headers: { 'X-Return-Format': 'html' },
+                signal: controller.signal,
+            });
+            clearTimeout(timer);
+            if (!res.ok) {
+                throw new Error(`HTTP ${res.status} (via r.jina.ai)`);
+            }
+            return { html: await res.text(), via: 'jina' };
+        }
+    };
 
     const convert = async (context, rawUrl) => {
         let url;
@@ -171,25 +211,18 @@ module.exports = (pluginManager, options) => {
         const notice = await tg.reply(context, '⏳ 正在抓取並轉換頁面…').catch(() => null);
 
         try {
-            const controller = new AbortController();
-            const timer = setTimeout(() => controller.abort(), 20000);
-            const res = await fetch(url.toString(), {
-                headers: { 'User-Agent': 'Mozilla/5.0 (compatible; LilyWhiteBot-telegraph; +https://github.com/SirnoChan/LilyWhiteBot)' },
-                signal: controller.signal,
-                redirect: 'follow',
-            });
-            clearTimeout(timer);
-            if (!res.ok) {
-                throw new Error(`HTTP ${res.status}`);
-            }
-            const html = await res.text();
+            const { html, via } = await fetchPageHtml(url.toString());
 
             const dom = new JSDOM(html, { url: url.toString() });
-            const reader = new Readability(dom.window.document);
-            const article = reader.parse();
+            let article = new Readability(dom.window.document).parse();
 
+            // jina 返回的已是提取後的正文，Readability 失敗時直接轉換其 HTML
             if (!article || !article.content) {
-                throw new Error('無法提取正文（頁面可能需要登錄或為動態渲染）');
+                if (via === 'jina') {
+                    article = { title: url.toString(), content: html };
+                } else {
+                    throw new Error('無法提取正文（頁面可能需要登錄或為動態渲染）');
+                }
             }
 
             let nodes = htmlToNodes(article.content, url.toString());
