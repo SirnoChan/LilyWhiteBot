@@ -2,6 +2,8 @@
 
 const winston = require('winston');
 const { LRUCache } = require('lru-cache');
+const fs = require('fs');
+const path = require('path');
 const Context = require('../../lib/handlers/Context.js');
 const BridgeMsg = require('./BridgeMsg.js');
 
@@ -13,11 +15,66 @@ let aliases = {};
 
 // 跨平台回復/撤回的基礎：源訊息（平台|原生ID）-> 各平台轉發訊息 ID 的映射
 // sent: Map<clientType, Array<{ chat/channel/room, id }>>
-let msgIndex = new LRUCache({ max: 2000, ttl: 24 * 3600 * 1000 });
+const MAP_TTL = 24 * 3600 * 1000;
+let msgIndex = new LRUCache({ max: 2000, ttl: MAP_TTL });
 const msgKey = (clientType, nativeId) => `${clientType}|${nativeId}`;
 
 // 反向索引：平台|bot 轉發訊息 ID -> 源訊息鍵（回復場景：用戶回覆的是 bot 的轉發訊息）
-let sentIndex = new LRUCache({ max: 4000, ttl: 24 * 3600 * 1000 });
+let sentIndex = new LRUCache({ max: 4000, ttl: MAP_TTL });
+
+// 映射表持久化：重啟後跨平台回復/撤回仍然可用
+const mapFile = path.join(__dirname, 'data', 'bridge-map.json');
+let mapDirty = false;
+
+const persistMap = () => {
+    try {
+        fs.mkdirSync(path.dirname(mapFile), { recursive: true });
+        const entries = [];
+        for (const [key, entry] of msgIndex.entries()) {
+            entries.push({
+                key,
+                ts: Date.now(),
+                source: entry.source,
+                sent: [...entry.sent].map(([client, ids]) => [client, ids]),
+            });
+        }
+        fs.writeFileSync(mapFile, JSON.stringify({ savedAt: Date.now(), entries }));
+        mapDirty = false;
+    } catch (e) {
+        winston.warn(`[bridge.js] failed to persist message map: ${e.message}`);
+    }
+};
+
+const restoreMap = () => {
+    try {
+        const data = JSON.parse(fs.readFileSync(mapFile, 'utf8'));
+        const cutoff = Date.now() - MAP_TTL;
+        for (const entry of data.entries || []) {
+            if (!entry.ts || entry.ts < cutoff) continue;
+            msgIndex.set(entry.key, {
+                source: entry.source,
+                sent: new Map(entry.sent),
+            });
+            for (const [targetClient, ids] of entry.sent) {
+                for (const s of ids) {
+                    sentIndex.set(`${targetClient}|${s.id}`, entry.key);
+                }
+            }
+        }
+        winston.info(`[bridge.js] restored ${msgIndex.size} message map entries from disk`);
+    } catch (e) {
+        if (e.code !== 'ENOENT') {
+            winston.warn(`[bridge.js] failed to restore message map: ${e.message}`);
+        }
+    }
+};
+restoreMap();
+
+setInterval(() => {
+    if (mapDirty) persistMap();
+}, 10000).unref();
+process.on('SIGTERM', () => { if (mapDirty) persistMap(); });
+process.on('SIGINT', () => { if (mapDirty) persistMap(); });
 
 // TODO 独立的命令处理
 // let commands = {};
@@ -181,6 +238,7 @@ const bridge = {
             }
         }
         entry.sent.set(targetClientType, arr);
+        mapDirty = true;
     },
 
     /**
@@ -216,6 +274,7 @@ const bridge = {
         }
         let entry = bridge.lookupSent(fromClientType, replyId) || bridge.lookupByForwardId(fromClientType, replyId);
         if (!entry || !entry.source) {
+            winston.debug(`[bridge.js] <ReplyRef> no map entry for ${msgKey(fromClientType, replyId)} (target ${targetClientType}) - falling back to text style`);
             return undefined;
         }
         if (entry.source.client === targetClientType) {
