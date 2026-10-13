@@ -208,6 +208,21 @@ module.exports = (pluginManager, options) => {
             return;
         }
 
+        // 常見站點的顯示名（沒有映射的用域名）
+        const SITE_NAMES = {
+            'zhihu.com': '知乎', 'bilibili.com': '嗶哩嗶哩', 'weibo.com': '微博', 'weibo.cn': '微博',
+            'mp.weixin.qq.com': '微信公眾平台', 'juejin.cn': '掘金', 'csdn.net': 'CSDN',
+            'sspai.com': '少數派', 'github.com': 'GitHub', 'medium.com': 'Medium',
+            'twitter.com': 'X', 'x.com': 'X', 'douban.com': '豆瓣', '36kr.com': '36氪',
+        };
+        const siteName = (() => {
+            const host = url.hostname.replace(/^www\./iu, '');
+            for (let domain in SITE_NAMES) {
+                if (host === domain || host.endsWith('.' + domain)) return SITE_NAMES[domain];
+            }
+            return host;
+        })();
+
         const notice = await tg.reply(context, '⏳ 正在抓取並轉換頁面…').catch(() => null);
 
         try {
@@ -215,6 +230,15 @@ module.exports = (pluginManager, options) => {
 
             const dom = new JSDOM(html, { url: url.toString() });
             let article = new Readability(dom.window.document).parse();
+
+            // 頁面 meta 裏的作者署名（Readability 的 byline 缺失時從 meta 提取）
+            const metaAuthor = (() => {
+                const $h = cheerio.load(html);
+                const m = $h('meta[property="article:author"]').attr('content')
+                    || $h('meta[name="author"]').attr('content')
+                    || $h('meta[name="twitter:creator"]').attr('content');
+                return (m || '').trim();
+            })();
 
             // jina 返回的已是提取後的正文，Readability 失敗時直接轉換其 HTML
             if (!article || !article.content) {
@@ -234,11 +258,16 @@ module.exports = (pluginManager, options) => {
                 nodes.push('…（內容過長，已截斷）');
             }
 
+            // 署名：原作者（原網站名），署名鏈接指向原文
+            const byline = (article.byline || metaAuthor || '').replace(/^\s*(?:作者|撰文|文)[\/：:\s]+/iu, '').trim();
+            const authorLine = byline ? `${byline}（${siteName}）` : `${siteName}`;
+
             const acc = await loadAccount();
             const pageBody = new URLSearchParams({
                 access_token: acc.access_token,
                 title: (article.title || 'Untitled').slice(0, 250),
-                author_name: authorName,
+                author_name: authorLine.slice(0, 128),
+                author_url: url.toString(),
                 content: JSON.stringify(nodes),
                 return_content: 'false',
             });
