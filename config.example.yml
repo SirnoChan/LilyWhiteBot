@@ -152,11 +152,17 @@ plugins:
   - linkclean                               # 展開短鏈（b23.tv、t.cn 等）並清理連結中的追蹤參數（utm_* 等）
   - tgiv                                    # Telegram 私聊 Instant View：私聊機器人發送 /iv <鏈接>，
                                             # 頁面有 IV 模板時消息自動附帶「Instant View」按鈕
+  - gif2webm                                # Telegram 私聊發送 GIF 動圖，自動轉為視頻貼紙規格 WebM 回傳
   - pia
 
 # Telegram 私聊 Instant View（tgiv 插件）
 tgiv:
   autoUrl: true                             # 私聊收到裸鏈接時自動轉換（無需 /iv 命令）
+
+# GIF 轉視頻貼紙（gif2webm 插件，需系統安裝 ffmpeg）
+gif2webm:
+  duration: 3                               # 最長時長（秒），超過截斷。貼紙上限 3 秒
+  fps: 30
 
 # 展開短鏈與清理追蹤參數（linkclean 插件）
 linkclean:
