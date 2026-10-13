@@ -1,7 +1,7 @@
 {
     "name": "lilywhitebot",
     "version": "1.7.0alpha",
-    "description": "多聊天群互联机器人（目前支持 QQ、Telegram、IRC、Discord、Matrix）",
+    "description": "多聊天群互联机器人（目前支持 QQ、Telegram、IRC、Discord、Matrix、LINE）",
     "repository": "github:Zokhoi/LilyWhiteBot",
     "license": "AGPL-3.0-or-later",
     "bugs": {

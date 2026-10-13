@@ -136,6 +136,23 @@ Matrix:
     # 群組 ID 即 Matrix 房間 ID（以 ! 開頭，例如 !abcdef:matrix.org），
     # 可在 Element 房間設定 -> 進階 中查看，填入 transport.groups 時寫作 matrix/!abcdef:matrix.org
 
+Line:
+  disabled: true                            # 如果需要 LINE 机器人，请设置为 false
+  bot:
+    channelAccessToken: ""                  # LINE Messaging API 的 Channel Access Token
+    channelSecret: ""                       # LINE Channel 的 Channel Secret
+    listen:
+      host: "0.0.0.0"                       # Webhook 监听地址
+      port: 11340                           # Webhook 监听端口
+      path: "/line-webhook"                 # Webhook 路径（LINE 后台需填 https://域名:端口/line-webhook）
+  options:
+    nickStyle: displayname                  # 转发时显示的昵称：displayname（LINE 显示名称）或 userid
+    # 注意：
+    # 1. Webhook URL 必须是 https（LINE 要求），请在前面加反向代理（nginx/caddy）终止 TLS
+    # 2. bot 需要在 LINE Officials Manager 中开启「加入群组」许可，并受邀进入目标群组
+    # 3. Push 消息有月度免费额度（免费档 200 则/月）
+    # 4. LINE 端不支持跨平台回复引用（API 无法获知自己发出的消息）
+
 # 系统日志
 logging:
   level: info                               # 日志等级：从详细到简单分别是 debug、info、warning、error，推荐用 info

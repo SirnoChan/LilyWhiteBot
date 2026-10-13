@@ -17,7 +17,8 @@ const allHandlers = new Map([
     ['Telegram', 'TelegramMessageHandler'],
     ['QQ', 'QQOnebot11MessageHandler'],
     ['Discord', 'DiscordMessageHandler'],
-    ['Matrix', 'MatrixMessageHandler']
+    ['Matrix', 'MatrixMessageHandler'],
+    ['Line', 'LineMessageHandler']
 ]);
 
 // 所有擴充套件包括傳話機器人都只與該物件打交道

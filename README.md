@@ -14,7 +14,7 @@ LilyWhiteBot
 目前新qq協議如 [napcat](https://github.com/NapNeko/NapCatQQ) 等已經可以使用。
 
 ## 功能
-* QQ（实验性）、Telegram、IRC、Discord、Matrix 等多组聊天群之间互联。
+* QQ（实验性）、Telegram、IRC、Discord、Matrix、LINE 等多组聊天群之间互联。
 * 可根据需要配置单向互联，或者将同一聊天软件的多个分群互联到一起。
 * 支持图片转发。如不能发送图片（IRC），程序可将图片上传到图床并提供图片链接。
 * 视频、图片、语音等媒体在各平台以原生内嵌形式发送（Discord 附件、Telegram sendVideo、Matrix m.video、OneBot CQ:video），而非以纯文件形式发送。
