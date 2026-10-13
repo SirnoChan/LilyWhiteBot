@@ -24,6 +24,12 @@
 const fs = require('fs');
 const path = require('path');
 const winston = require('winston');
+
+// cheerio 1.2 的依赖引用 File 全局（Node 20+），Node 18 需补丁
+if (typeof globalThis.File === 'undefined') {
+    globalThis.File = class File extends Blob {};
+}
+
 const { JSDOM } = require('jsdom');
 const { Readability } = require('@mozilla/readability');
 const cheerio = require('cheerio');
