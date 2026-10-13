@@ -150,7 +150,13 @@ plugins:
   - ircquery                                # 允許查詢 IRC 的一些訊息
   - irccommand                              # 允許向 IRC 發送一些命令（注意，不是 IRC 命令而是給頻道內機器人使用的命令）
   - linkclean                               # 展開短鏈（b23.tv、t.cn 等）並清理連結中的追蹤參數（utm_* 等）
+  - tgiv                                    # Telegram 私聊 Instant View：私聊機器人發送 /iv <鏈接>，
+                                            # 頁面有 IV 模板時消息自動附帶「Instant View」按鈕
   - pia
+
+# Telegram 私聊 Instant View（tgiv 插件）
+tgiv:
+  autoUrl: true                             # 私聊收到裸鏈接時自動轉換（無需 /iv 命令）
 
 # 展開短鏈與清理追蹤參數（linkclean 插件）
 linkclean:
