@@ -93,6 +93,48 @@ const init = (b, h, c) => {
         bridge.recall('QQ', data.nativeId);
     });
 
+    // 群文件上傳：以通知 + 文件本體（可下載時）轉發到其他群組
+    qqHandler.on('groupfile', async (data) => {
+        const getFriendlySize = (n) => {
+            if (n <= 1126) return `${n} B`;
+            if (n <= 1153433) return `${(n / 1024).toLocaleString()} KB`;
+            if (n <= 1181116006) return `${(n / 1048576).toLocaleString()} MB`;
+            return `${(n / 1073741824).toLocaleString()} GB`;
+        };
+
+        let nick = `QQ:${data.user}`;
+        try {
+            nick = (await qqHandler.groupMemberInfo(data.group, data.user)).name || nick;
+        } catch (e) { /* 拿不到群名片用默認 */ }
+
+        // 超過 20MB 的文件不抓取本體（下載+上傳鏈路風險高），只發通知
+        const MAX_TRANSFER = 20 * 1024 * 1024;
+        let files;
+        if (data.fileId && data.size > 0 && data.size <= MAX_TRANSFER) {
+            const content = await qqHandler.getGroupFileContent(data.fileId);
+            if (content) {
+                files = [{
+                    client: 'QQ',
+                    type: 'file',
+                    id: data.fileId,
+                    size: data.size,
+                    url: content.url,
+                    path: content.path,
+                }];
+            }
+        }
+
+        bridge.send(new BridgeMsg({
+            from: data.user,
+            to: data.group,
+            nick: nick,
+            text: `📁 上傳了群文件：${data.name}（${getFriendlySize(data.size)}）`,
+            isNotice: !files,
+            extra: { files: files },
+            handler: qqHandler,
+        })).catch(e => winston.error(e.stack || e.message));
+    });
+
     /*
      * 傳話
      */

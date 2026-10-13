@@ -48,8 +48,8 @@ matrixHandler.say = async (target, message, options = {}) => {
 matrixHandler.sayWithHTML = async (target, message, formattedBody, options = {}) => {
     calls.matrix.push({ target, message, formattedBody, options });
 };
-matrixHandler.sendMediaFromUrl = async (target, url, type, info = {}) => {
-    calls.matrix.push({ target, media: { url, type, info } });
+matrixHandler.sendMediaFromUrl = async (target, url, type, info = {}, filename) => {
+    calls.matrix.push({ target, media: { url, type, info, filename } });
 };
 telegramHandler.say = async (target, message, options = {}) => {
     calls.telegram.push({ target, message, options });
@@ -156,21 +156,23 @@ console.log('[2] transport loaded, map keys:', Object.keys(bridge.map).join(' | 
         handler: matrixHandler,
     });
 
-    // Matrix 端：视频应通过 sendMediaFromUrl 以 m.video 发送
+    // Matrix 端：视频通过 sendMediaFromUrl 以 m.video 发送，file 以 m.file 发送
     await MatrixProcessor.receive(videoMsg);
     let mxMedia = calls.matrix.filter(c => c.media);
-    assert.ok(mxMedia.length === 1, 'matrix should send 1 media');
+    assert.ok(mxMedia.length === 2, 'matrix should send video + file as media');
     assert.strictEqual(mxMedia[0].media.type, 'm.video');
     assert.strictEqual(mxMedia[0].media.url, 'https://cdn.example.invalid/v.mp4');
-    assert.ok(calls.matrix.some(c => c.message && c.message.includes('doc.pdf')), 'non-media url appended as text');
+    let mxFile = mxMedia.find(c => c.media.type === 'm.file');
+    assert.ok(mxFile && mxFile.media.filename === 'doc.pdf', 'file keeps original filename');
     console.log('[4] Matrix video sent as m.video (inline) OK');
 
-    // Discord 端：视频应作为附件随消息发送
+    // Discord 端：视频与文件都应作为附件随消息发送
     await DiscordProcessor.receive(videoMsg);
     assert.strictEqual(calls.discord.length, 1, 'discord receive video msg');
     assert.ok(calls.discord[0].options && calls.discord[0].options.files, 'discord should get files option');
     assert.strictEqual(calls.discord[0].options.files[0].name, 'video.mp4', 'video attachment name');
-    assert.ok(calls.discord[0].message.includes('doc.pdf'), 'non-video url appended as text');
+    assert.strictEqual(calls.discord[0].options.files.length, 2, 'file also attached');
+    assert.strictEqual(calls.discord[0].options.files[1].name, 'doc.pdf', 'file attachment keeps filename');
     console.log('[5] Discord video sent as inline attachment OK');
 
     // Telegram 端：视频应通过 sendVideo 发送

@@ -248,7 +248,7 @@ const receive = async (msg) => {
         }
     }
 
-    // 影片以附件形式隨訊息發送，Discord 客戶端會直接內嵌播放；其他類型仍以連結顯示
+    // 影片與文件以附件形式隨訊息發送（Discord 會內嵌播放/顯示為文件）；其他類型仍以連結顯示
     let videoFiles = [];
     let attachFileUrls = '';
     for (let upload of (msg.extra.uploads || [])) {
@@ -257,6 +257,12 @@ const receive = async (msg) => {
             videoFiles.push({
                 attachment: upload.url,
                 name: `video.${m ? m[1] : 'mp4'}`,
+            });
+        } else if (upload.type === 'file') {
+            let base = upload.url.split('/').pop().split('?')[0] || 'file';
+            videoFiles.push({
+                attachment: upload.url,
+                name: decodeURIComponent(base).slice(0, 100),
             });
         } else {
             attachFileUrls += ` ${upload.url}`;

@@ -130,6 +130,9 @@ const receive = async (msg) => {
             pendingMedia.push({ type: 'm.image', url: upload.url, info: { mimetype: 'image/png' } });
         } else if (upload.type === 'audio') {
             pendingMedia.push({ type: 'm.audio', url: upload.url, info: {} });
+        } else if (upload.type === 'file') {
+            let base = upload.url.split('/').pop().split('?')[0] || 'file';
+            pendingMedia.push({ type: 'm.file', url: upload.url, info: {}, filename: decodeURIComponent(base).slice(0, 100) });
         } else {
             attachFileUrls += ` ${upload.url}`;
         }
@@ -142,7 +145,7 @@ const receive = async (msg) => {
 
     for (let media of pendingMedia) {
         try {
-            record(await matrixHandler.sendMediaFromUrl(msg.to, media.url, media.type, media.info));
+            record(await matrixHandler.sendMediaFromUrl(msg.to, media.url, media.type, media.info, media.filename));
         } catch (e) {
             winston.warn(`MatrixBot failed to send media ${media.url}, falling back to URL: ${e.message}`);
             record(await matrixHandler.say(msg.to, media.url));
