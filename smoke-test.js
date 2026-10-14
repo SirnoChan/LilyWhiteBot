@@ -326,7 +326,7 @@ console.log('[2] transport loaded, map keys:', Object.keys(bridge.map).join(' | 
         from: 'user1',
         to: '111',
         nick: 'Tester',
-        text: '看这个 https://www.bilibili.com/video/BV1gDhm6YEUj?-Arouter=story&buvid=Y145F91&from_spmid=tm.recommend.0.0&is_story_h5=false&mid=s3qtBNZIThMIhYSiy8ruAw%3D%3D&p=1&plat_id=163&spmid=main.ugc-video-detail-vertical.0.0&timestamp=1790491979 和 https://example.org/page?utm_source=chat&utm_medium=x&id=9 好看',
+        text: '看这个 https://www.bilibili.com/video/BV1gDhm6YEUj?-Arouter=story&buvid=Y145F91&from_spmid=tm.recommend.0.0&is_story_h5=false&mid=s3qtBNZIThMIhYSiy8ruAw%3D%3D&p=1&plat_id=163&spmid=main.ugc-video-detail-vertical.0.0&timestamp=1790491979 和 https://www.bilibili.com/video/BVxx?p=2&t=30 和 https://example.org/page?utm_source=chat&utm_medium=x&id=9 好看',
         isPrivate: false,
         extra: {},
         handler: discordHandler,
@@ -337,7 +337,9 @@ console.log('[2] transport loaded, map keys:', Object.keys(bridge.map).join(' | 
     let outText = calls.matrix.map(c => c.message).join(' ');
     let bvLink = outText.match(/https:\/\/www\.bilibili\.com\/video\/BV1gDhm6YEUj[^\s]*/u);
     assert.ok(bvLink, 'bilibili link preserved');
-    assert.strictEqual(bvLink[0], 'https://www.bilibili.com/video/BV1gDhm6YEUj?p=1', 'bilibili link reduced to p=1 only');
+    assert.strictEqual(bvLink[0], 'https://www.bilibili.com/video/BV1gDhm6YEUj', 'bilibili p=1 dropped (first part)');
+    let bvLink2 = outText.match(/https:\/\/www\.bilibili\.com\/video\/BVxx[^\s]*/u);
+    assert.ok(bvLink2 && bvLink2[0] === 'https://www.bilibili.com/video/BVxx?p=2&t=30', 'non-1 part p and t kept');
     assert.ok(!outText.includes('utm_source'), 'utm_source removed');
     assert.ok(outText.includes('id=9'), 'generic id param kept');
     console.log('[12] linkclean tracking param cleanup OK');

@@ -58,7 +58,7 @@ const BUILTIN_TRACKING_PARAMS = [
 // keep：白名單之外的參數全刪（適合分享連結垃圾參數成堆的站點）
 // drop：只刪列出的參數（適合過於通用、不能全域生效的參數名）
 const BUILTIN_DOMAIN_RULES = {
-    'bilibili.com': { keep: ['p', 't'] },  // 只保留分P與跳轉時間；buvid/spmid/from_spmid/mid/plat_id/timestamp 等全刪
+    'bilibili.com': { keep: ['p!=1', 't'] },  // 保留非 1 的分P 與跳轉時間；buvid/spmid/from_spmid/mid/plat_id/timestamp 等全刪
     'weibo.com': { keep: [] },
     'weibo.cn': { keep: [] },
     'xiaohongshu.com': { keep: ['xsec_token', 'xsec_source'] },
@@ -120,7 +120,16 @@ const cleanUrl = (rawUrl, trackingParams, domainRules) => {
     for (let key of [...u.searchParams.keys()]) {
         let shouldDrop;
         if (keepList) {
-            shouldDrop = !keepList.includes(key);
+            // keep 項支持「key!=value」條件語法：僅保留值不等於該值的參數（如 bilibili 的 p!=1）
+            const rule = keepList.find(r => r === key || r.startsWith(key + '!='));
+            if (rule === undefined) {
+                shouldDrop = true;
+            } else if (rule.includes('!=')) {
+                const [k, v] = rule.split('!=');
+                shouldDrop = (u.searchParams.get(k) === v);
+            } else {
+                shouldDrop = false;
+            }
         } else if (dropList) {
             shouldDrop = dropList.includes(key);
         } else {
