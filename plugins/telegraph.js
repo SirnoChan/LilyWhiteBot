@@ -148,7 +148,105 @@ const htmlToNodes = (html, baseUrl) => {
     return convertChildren($.root());
 };
 
-module.exports = (pluginManager, options) => {
+/**
+ * 行內 markdown 解析：[text](url)、![alt](src)、**bold**、*em*、`code`
+ */
+const parseInline = (text, baseUrl) => {
+    const nodes = [];
+    const re = /!?\[([^\]]*)\]\(([^)\s]+)[^)]*\)|\*\*([^*]+)\*\*|`([^`]+)`|\*([^*\n]+)\*/gu;
+    let last = 0, m;
+    while ((m = re.exec(text)) !== null) {
+        if (m.index > last) nodes.push(text.slice(last, m.index));
+        if (m[0].startsWith('!')) {
+            let src;
+            try { src = new URL(m[2], baseUrl).toString(); } catch (e) { src = m[2]; }
+            nodes.push({ tag: 'img', attrs: { src }, children: [] });
+        } else if (m[2] !== undefined) {
+            let href;
+            try { href = new URL(m[2], baseUrl).toString(); } catch (e) { href = m[2]; }
+            nodes.push({ tag: 'a', attrs: { href }, children: [m[1] || m[2]] });
+        } else if (m[4] !== undefined) {
+            nodes.push({ tag: 'strong', children: [m[4]] });
+        } else if (m[6] !== undefined) {
+            nodes.push({ tag: 'code', children: [m[6]] });
+        } else if (m[5] !== undefined) {
+            nodes.push({ tag: 'em', children: [m[5]] });
+        }
+        last = m.index + m[0].length;
+    }
+    if (last < text.length) nodes.push(text.slice(last));
+    return nodes;
+};
+
+/**
+ * jina markdown 轉 Telegraph 節點。
+ * 輸入格式：頭部「Title: xxx」「URL Source: xxx」行，之後「Markdown Content:」正文。
+ */
+const markdownToNodes = (md, baseUrl) => {
+    const titleMatch = md.match(/^Title:\s*(.+)$/mu);
+    const title = titleMatch ? titleMatch[1].trim() : '';
+    const body = md.includes('Markdown Content:') ? md.split(/^Markdown Content:\s*$/mu).pop() : md;
+
+    const nodes = [];
+    const lines = body.split('\n');
+    let para = [];
+    let list = null;        // 'ul' | 'ol' | null
+    let inCode = false;
+    let codeLines = [];
+
+    const flushPara = () => {
+        const text = para.join(' ').trim();
+        para = [];
+        if (!text) return;
+        const inline = parseInline(text, baseUrl);
+        nodes.push({ tag: 'p', children: inline.length ? inline : [text] });
+    };
+    let pendingListItems = [];
+    const flushList = () => {
+        if (pendingListItems.length) {
+            nodes.push({ tag: list || 'ul', children: pendingListItems });
+            pendingListItems = [];
+            list = null;
+        }
+    };
+    const addListItem = (text, tag) => {
+        if (!list) list = tag || 'ul';
+        const inline = parseInline(text, baseUrl);
+        pendingListItems.push({ tag: 'li', children: inline.length ? inline : [text] });
+    };
+
+    for (let line of lines) {
+        if (inCode) {
+            if (/^```/u.test(line.trim())) {
+                nodes.push({ tag: 'pre', children: [codeLines.join('\n')] });
+                inCode = false; codeLines = [];
+            } else {
+                codeLines.push(line);
+            }
+            continue;
+        }
+        const trimmed = line.trim();
+        if (/^```/u.test(trimmed)) { flushPara(); flushList(); inCode = true; continue; }
+        if (trimmed === '') { flushPara(); flushList(); continue; }
+        if (/^Title:\s|^URL Source:\s|^Published Time:/u.test(trimmed)) continue;
+
+        let m;
+        if ((m = trimmed.match(/^(#{1,6})\s+(.+)$/u))) { flushPara(); flushList(); nodes.push({ tag: m[1].length <= 3 ? 'h3' : 'h4', children: parseInline(m[2], baseUrl) }); continue; }
+        if ((m = trimmed.match(/^!\[([^\]]*)\]\(([^)\s]+)[^)]*\)$/u))) { flushPara(); flushList(); let src; try { src = new URL(m[2], baseUrl).toString(); } catch (e) { src = m[2]; } nodes.push({ tag: 'img', attrs: { src }, children: [] }); continue; }
+        if ((m = trimmed.match(/^[-*+]\s+(.*)$/u))) { flushPara(); if (list === 'ol') flushList(); addListItem(m[1], 'ul'); continue; }
+        if ((m = trimmed.match(/^\d+[.)]\s+(.*)$/u))) { flushPara(); if (list === 'ul') flushList(); list = 'ol'; addListItem(m[1], 'ol'); continue; }
+        if (/^>\s?/u.test(trimmed)) { flushPara(); flushList(); nodes.push({ tag: 'blockquote', children: parseInline(trimmed.replace(/^>\s?/u, ''), baseUrl) }); continue; }
+        if (/^(-{3,}|\*{3,})$/u.test(trimmed)) { flushPara(); flushList(); nodes.push({ tag: 'hr', children: [] }); continue; }
+
+        flushList();
+        para.push(trimmed);
+    }
+    flushPara(); flushList();
+    // li 必須掛在列表容器下：上面 addListItem 直接 push 了 li（Telegraph 允許頂層 li？不允許）——修正：li 由 addListItem 收集
+    return { title, nodes };
+};
+
+const telegraphPlugin = (pluginManager, options) => {
     const tg = pluginManager.handlers.get('Telegram');
 
     if (!tg) {
@@ -187,15 +285,16 @@ module.exports = (pluginManager, options) => {
             winston.info(`[telegraph] direct fetch failed (${e.message}), trying r.jina.ai fallback`);
             const controller = new AbortController();
             const timer = setTimeout(() => controller.abort(), 60000);
+            // jina 的 html 輸出模式對中文頁面有編碼 bug（輸出雙重編碼亂碼），
+            // 改用默認的 markdown 輸出（中文正常），由 markdownToNodes 轉換
             const res = await fetch(`https://r.jina.ai/${pageUrl}`, {
-                headers: { 'X-Return-Format': 'html' },
                 signal: controller.signal,
             });
             clearTimeout(timer);
             if (!res.ok) {
                 throw new Error(`HTTP ${res.status} (via r.jina.ai)`);
             }
-            return { html: await res.text(), via: 'jina' };
+            return { html: await res.text(), via: 'jina-markdown' };
         }
     };
 
@@ -249,8 +348,10 @@ module.exports = (pluginManager, options) => {
         try {
             const { html, via } = await fetchPageHtml(url.toString());
 
+            let article, jinaMarkdown = null, jinaTitle = '';
             const dom = new JSDOM(html, { url: url.toString() });
-            let article = new Readability(dom.window.document).parse();
+            article = new Readability(dom.window.document).parse();
+            const docTitle = dom.window.document.title || '';
 
             // 頁面 meta 裏的作者署名（Readability 的 byline 缺失時從 meta 提取）
             const metaAuthor = (() => {
@@ -261,16 +362,21 @@ module.exports = (pluginManager, options) => {
                 return (m || '').trim();
             })();
 
-            // jina 返回的已是提取後的正文，Readability 失敗時直接轉換其 HTML
+            // jina 返回的已是提取後的 markdown 正文，Readability 失敗時直接轉換其 markdown
             if (!article || !article.content) {
-                if (via === 'jina') {
-                    article = { title: docTitle || url.toString(), content: html };
+                if (via === 'jina-markdown') {
+                    jinaMarkdown = html;
+                    jinaTitle = (html.match(/^Title:\s*(.+)$/mu) || [])[1] || '';
+                    article = { title: jinaTitle, byline: '', content: '' };
                 } else {
                     throw new Error('無法提取正文（頁面可能需要登錄或為動態渲染）');
                 }
             }
 
-            let nodes = htmlToNodes(article.content, url.toString());
+            let nodes = (via === 'jina-markdown')
+                ? markdownToNodes(jinaMarkdown, url.toString()).nodes
+                : htmlToNodes(article.content, url.toString());
+            if (via === 'jina-markdown' && !article.title) article.title = url.toString();
 
             // 截斷超長內容（Telegraph 限制 64KB）
             let size = JSON.stringify(nodes).length;
@@ -281,10 +387,10 @@ module.exports = (pluginManager, options) => {
 
             // 署名：原作者（原網站名），署名鏈接指向原文。
             // 作者優先級：頁面標題的知乎格式 > Readability/meta 的 byline（清洗後）> 網站名
-            const docTitle = dom.window.document.title || '';
             const byline = cleanByline(authorFromTitle(docTitle)
                 || (article.byline && article.byline !== docTitle ? article.byline : '')
-                || metaAuthor);
+                || metaAuthor
+                || ((jinaTitle.match(/[-–—]\s*(.{1,30}?)\s*的(?:回答|文章)\s*$/u) || [])[1] || ''));
             const authorLine = byline ? `${byline}（${siteName}）` : `${siteName}`;
 
             const acc = await loadAccount();
@@ -343,3 +449,7 @@ module.exports = (pluginManager, options) => {
     tg.addCommand('telegraph', handler);
     tg.addCommand('tgh', handler);
 };
+
+module.exports = telegraphPlugin;
+module.exports.markdownToNodes = markdownToNodes;
+module.exports.parseInline = parseInline;
