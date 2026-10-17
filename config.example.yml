@@ -172,6 +172,12 @@ plugins:
   - gif2webm                                # Telegram 私聊發送 GIF 動圖，自動轉為視頻貼紙規格 WebM 回傳
   - pia
 
+# Jina Reader 回退的反爬配置（telegraph 插件抓取被反爬的站點如知乎時使用）。
+# 匿名請求對部分站點會 403；在 https://jina.ai 免費註冊獲取 API Key（免費額度 1M token/月）
+# 後填入 jinaApiKey 可大幅提高抓取成功率。
+telegraph:
+  # jinaApiKey: "jina_xxxxxxxxxxxxxxxx"
+
 # Telegram 私聊 Instant View（tgiv 插件）
 tgiv:
   autoUrl: true                             # 私聊收到裸鏈接時自動轉換（無需 /iv 命令）

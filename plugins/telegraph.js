@@ -257,6 +257,7 @@ const telegraphPlugin = (pluginManager, options) => {
     const authorName = options.authorName || 'LilyWhiteBot';
     const maxChars = options.maxChars === undefined ? 60000 : options.maxChars;
     const jinaFallback = options.jinaFallback !== false;
+    const jinaApiKey = options.jinaApiKey || '';
 
     /**
      * 抓取页面 HTML。直接抓取失败（403 等反爬拦截）时，
@@ -283,18 +284,32 @@ const telegraphPlugin = (pluginManager, options) => {
         } catch (e) {
             if (!jinaFallback) throw e;
             winston.info(`[telegraph] direct fetch failed (${e.message}), trying r.jina.ai fallback`);
-            const controller = new AbortController();
-            const timer = setTimeout(() => controller.abort(), 60000);
+            const jinaFetch = async () => {
+                const controller = new AbortController();
+                const timer = setTimeout(() => controller.abort(), 90000);
+                const headers = {};
+                if (jinaApiKey) headers.Authorization = `Bearer ${jinaApiKey}`;
+                const res = await fetch(`https://r.jina.ai/${pageUrl}`, {
+                    headers,
+                    signal: controller.signal,
+                });
+                clearTimeout(timer);
+                if (!res.ok) {
+                    throw new Error(`HTTP ${res.status} (via r.jina.ai)`);
+                }
+                return res.text();
+            };
             // jina 的 html 輸出模式對中文頁面有編碼 bug（輸出雙重編碼亂碼），
-            // 改用默認的 markdown 輸出（中文正常），由 markdownToNodes 轉換
-            const res = await fetch(`https://r.jina.ai/${pageUrl}`, {
-                signal: controller.signal,
-            });
-            clearTimeout(timer);
-            if (!res.ok) {
-                throw new Error(`HTTP ${res.status} (via r.jina.ai)`);
+            // 改用默認的 markdown 輸出（中文正常），由 markdownToNodes 轉換；
+            // 匿名請求對部分站點會 403，間隔後重試一次（有時命中 jina 內部緩存或換出口）
+            let text;
+            try {
+                text = await jinaFetch();
+            } catch (e1) {
+                await new Promise(r => setTimeout(r, 3000));
+                text = await jinaFetch();
             }
-            return { html: await res.text(), via: 'jina-markdown' };
+            return { html: text, via: 'jina-markdown' };
         }
     };
 
@@ -416,7 +431,8 @@ const telegraphPlugin = (pluginManager, options) => {
             winston.info(`[telegraph] converted ${url} -> ${link}`);
             await tg.reply(context, `📄 ${article.title || ''}\n\n${link}`);
         } catch (e) {
-            winston.warn(`[telegraph] conversion failed for ${rawUrl}: ${e.message}`);
+            winston.warn(`[telegraph] conversion failed for ${rawUrl}: ${e.message}
+${e.stack || ''}`);
             await tg.reply(context, `❌ 轉換失敗：${e.message}`).catch(() => {});
         } finally {
             if (notice) {
