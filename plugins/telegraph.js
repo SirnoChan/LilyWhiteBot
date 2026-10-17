@@ -183,6 +183,9 @@ const parseInline = (text, baseUrl) => {
  * 輸入格式：頭部「Title: xxx」「URL Source: xxx」行，之後「Markdown Content:」正文。
  */
 const markdownToNodes = (md, baseUrl) => {
+    if (typeof md !== 'string') {
+        throw new Error(`抓取結果異常：markdown 為 ${md === null ? 'null' : typeof md}（jina 返回類型需排查）`);
+    }
     const titleMatch = md.match(/^Title:\s*(.+)$/mu);
     const title = titleMatch ? titleMatch[1].trim() : '';
     const body = md.includes('Markdown Content:') ? md.split(/^Markdown Content:\s*$/mu).pop() : md;
@@ -308,6 +311,9 @@ const telegraphPlugin = (pluginManager, options) => {
             } catch (e1) {
                 await new Promise(r => setTimeout(r, 3000));
                 text = await jinaFetch();
+            }
+            if (typeof text !== 'string') {
+                winston.error(`[telegraph] jina returned non-string: ${JSON.stringify(text)}`);
             }
             return { html: text, via: 'jina-markdown' };
         }
