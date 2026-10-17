@@ -300,7 +300,9 @@ const telegraphPlugin = (pluginManager, options) => {
                 if (!res.ok) {
                     throw new Error(`HTTP ${res.status} (via r.jina.ai)`);
                 }
-                return res.text();
+                const body = await res.text();
+                console.error(`DBG jinaFetch: status=${res.status} typeof=${typeof body} len=${body.length} head=${JSON.stringify(body.slice(0, 60))}`);
+                return body;
             };
             // jina 的 html 輸出模式對中文頁面有編碼 bug（輸出雙重編碼亂碼），
             // 改用默認的 markdown 輸出（中文正常），由 markdownToNodes 轉換；
