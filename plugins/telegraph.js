@@ -372,34 +372,35 @@ const telegraphPlugin = (pluginManager, options) => {
             const { html, via } = await fetchPageHtml(url.toString());
 
             let article, jinaMarkdown = null, jinaTitle = '';
-            const dom = new JSDOM(html, { url: url.toString() });
-            article = new Readability(dom.window.document).parse();
-            const docTitle = dom.window.document.title || '';
+            let docTitle = '';
+            let metaAuthor = '';
+            let nodes;
 
-            // 頁面 meta 裏的作者署名（Readability 的 byline 缺失時從 meta 提取）
-            const metaAuthor = (() => {
+            if (via === 'jina-markdown') {
+                // jina markdown 路徑：純文本不走 Readability（純文本偶爾會讓 Readability
+                // 返回空殼 article，導致跳過 markdown 賦值而崩潰/產生 Untitled 頁面）
+                jinaMarkdown = html;
+                jinaTitle = (html.match(/^Title:\s*(.+)$/mu) || [])[1] || '';
+                article = { title: jinaTitle, byline: '', content: '' };
+                docTitle = jinaTitle;
+                nodes = markdownToNodes(jinaMarkdown, url.toString()).nodes;
+            } else {
+                const dom = new JSDOM(html, { url: url.toString() });
+                article = new Readability(dom.window.document).parse();
+                docTitle = dom.window.document.title || '';
+
+                // 頁面 meta 裏的作者署名（Readability 的 byline 缺失時從 meta 提取）
                 const $h = cheerio.load(html);
-                const m = $h('meta[property="article:author"]').attr('content')
+                metaAuthor = ($h('meta[property="article:author"]').attr('content')
                     || $h('meta[name="author"]').attr('content')
-                    || $h('meta[name="twitter:creator"]').attr('content');
-                return (m || '').trim();
-            })();
+                    || $h('meta[name="twitter:creator"]').attr('content')
+                    || '').trim();
 
-            // jina 返回的已是提取後的 markdown 正文，Readability 失敗時直接轉換其 markdown
-            if (!article || !article.content) {
-                if (via === 'jina-markdown') {
-                    jinaMarkdown = html;
-                    jinaTitle = (html.match(/^Title:\s*(.+)$/mu) || [])[1] || '';
-                    article = { title: jinaTitle, byline: '', content: '' };
-                } else {
+                if (!article || !article.content) {
                     throw new Error('無法提取正文（頁面可能需要登錄或為動態渲染）');
                 }
+                nodes = htmlToNodes(article.content, url.toString());
             }
-
-            let nodes = (via === 'jina-markdown')
-                ? markdownToNodes(jinaMarkdown, url.toString()).nodes
-                : htmlToNodes(article.content, url.toString());
-            if (via === 'jina-markdown' && !article.title) article.title = url.toString();
 
             // 截斷超長內容（Telegraph 限制 64KB）
             let size = JSON.stringify(nodes).length;
