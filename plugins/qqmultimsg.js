@@ -20,14 +20,15 @@ module.exports = (pluginManager, options) => {
 
     let command = options.command || '!qmulti';
 
-    bridge.addCommand(command, (context) => {
+    const commandCallback = (context) => {
         if (context.isPrivate) {
-          if (['Telegram', 'IRC', 'Discord', 'QQ', 'Matrix'].includes(context._from_client)) {
-              let handler = pluginManager.handlers.get(context._from_client);
+          const client = context.handler.type;
+          if (['Telegram', 'IRC', 'Discord', 'QQ', 'Matrix'].includes(client)) {
+              let handler = pluginManager.handlers.get(client);
               let qqHandler = pluginManager.handlers.get('QQ');
               qqHandler.getForwardMsg(context.param.split(' ')[0]).then(res=>{
                 // QQ/IRC 私聊的 to 是機器人自身，回覆目標應為發起查詢的用戶
-                let target = ['IRC', 'QQ'].includes(context._from_client) ? context.from : context.to;
+                let target = ['IRC', 'QQ'].includes(client) ? context.from : context.to;
                 if (res.status=='ok') {
                   let msgArray = [];
                   if (Array.isArray(res.data)) {
@@ -81,5 +82,17 @@ module.exports = (pluginManager, options) => {
               
           }
         }
-    }, options);
+    };
+
+    // handler 层命令：Telegram 的命令消息被 processor 过滤（不进 bridge.send），
+    // 挂在 bridge.send hook 上的命令在 TG 永不触发，因此直接注册到各平台 handler。
+    // Telegram 的命令前缀固定为 /，其余平台用配置的完整前缀（!qmulti）。
+    for (const client of ['Telegram', 'IRC', 'Discord', 'QQ', 'Matrix']) {
+        if (pluginManager.handlers.has(client)) {
+            pluginManager.handlers.get(client).addCommand(
+                client === 'Telegram' ? command.replace(/^!/, '/') : command,
+                commandCallback,
+            );
+        }
+    }
 };

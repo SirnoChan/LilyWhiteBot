@@ -216,7 +216,7 @@ module.exports = (pluginManager, options) => {
     // 載入各用戶端的處理程式，並連接到 bridge 中
     for (let [type, handler] of pluginManager.handlers) {
         let processor = require(`./transport/processors/${type}.js`);
-        processor.init(bridge, handler, options);
+        processor.init(bridge, handler, options, pluginManager);
         bridge.addProcessor(type, processor);
     }
 

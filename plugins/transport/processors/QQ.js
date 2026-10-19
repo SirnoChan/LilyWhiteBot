@@ -26,6 +26,7 @@ let groupInfo = new LRU.LRUCache({
 });
 
 let bridge = null;
+let pluginManager = null;
 let config = null;
 let qqHandler = null;
 let forwardBots = [];
@@ -73,7 +74,8 @@ const parseForwardBot = (text, options) => {
     return { realNick: groups.nick, realText: groups.text };
 };
 
-const init = (b, h, c) => {
+const init = (b, h, c, pm) => {
+    pluginManager = pm || pluginManager;
     bridge = b;
     config = c;
     qqHandler = h;
@@ -167,24 +169,42 @@ const init = (b, h, c) => {
                 let { data } = await qqHandler.getForwardMsg(context.extra.forward[0]);
                 let messages = (data && data.messages) || [];
                 if (messages.length) {
-                    let limit = options.forwardSummaryLines || 5;
-                    let lines = [];
-                    for (let m of messages.slice(0, limit)) {
+                    const entries = [];
+                    for (let m of messages) {
                         let nick = (m.sender && (m.sender.card || m.sender.nickname)) || '';
                         let content = m.content || m.message || [];
                         let text = typeof content === 'string' ? content : (qqHandler.parseMessage(content).text || '');
-                        text = String(text).replace(/\n/gu, ' ');
-                        if (text.length > 30) {
-                            text = text.slice(0, 30) + '…';
+                        text = String(text).replace(/\n/gu, ' ').trim();
+                        if (text) entries.push({ nick, text });
+                    }
+
+                    let summaryBlock;
+                    if (pluginManager.global.ai && pluginManager.global.ai.aiAvailable()) {
+                        try {
+                            const aiOut = await pluginManager.global.ai.summarizeMergedForward(entries);
+                            summaryBlock = `「AI 摘要｜合并转发 ${entries.length} 条」
+` + aiOut;
+                        } catch (e) {
+                            winston.warn(`AI summary failed, falling back to list: ${e.message}`);
                         }
-                        lines.push(`> ${nick}: ${text}`);
                     }
-                    if (messages.length > limit) {
-                        lines.push(`……共 ${messages.length} 条`);
+
+                    if (!summaryBlock) {
+                        let limit = options.forwardSummaryLines || 5;
+                        let lines = [];
+                        for (let e of entries.slice(0, limit)) {
+                            let text = e.text.length > 30 ? e.text.slice(0, 30) + '…' : e.text;
+                            lines.push(`> ${e.nick}: ${text}`);
+                        }
+                        if (entries.length > limit) {
+                            lines.push(`……共 ${entries.length} 条`);
+                        }
+                        summaryBlock = `「合并转发 ${entries.length} 条」\n` + lines.join('\n');
                     }
+
                     const qmultiHint = (context.extra.forward && context.extra.forward.length)
                         ? '\n[私聊机器人使用 !qmulti ' + context.extra.forward[0] + ' 以查看转发消息]' : '';
-                    context.text = `「合并转发 ${messages.length} 条」\n` + lines.join('\n') + qmultiHint;
+                    context.text = summaryBlock + qmultiHint;
                 }
             } catch (e) {
                 winston.warn(`Failed to fetch forward msg summary: ${e.message}`);

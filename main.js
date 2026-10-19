@@ -120,6 +120,11 @@ if (config.QQ && !config.QQ.apiRoot && !(config.QQ.bot && config.QQ.bot.apiRoot)
     allHandlers.set('QQ', 'QQOICQMessageHandler');
 }
 
+// AI 摘要模块（可选，config.yml 顶层 ai 節）
+const ai = require('./lib/ai.js');
+ai.init(config.ai || {});
+pluginManager.global.ai = ai;
+
 // 启动各机器人
 let enabledClients = [];
 for (let type of allHandlers.keys()) {
