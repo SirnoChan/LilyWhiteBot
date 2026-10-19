@@ -182,7 +182,9 @@ const init = (b, h, c) => {
                     if (messages.length > limit) {
                         lines.push(`……共 ${messages.length} 条`);
                     }
-                    context.text = `「合并转发 ${messages.length} 条」\n` + lines.join('\n') + (context.text.match(/\[私聊机器人使用 !qmulti/) ? '\n' + context.text.match(/\[私聊机器人使用 !qmulti[^\]]*\]/)[0] : '');
+                    const qmultiHint = (context.extra.forward && context.extra.forward.length)
+                        ? '\n[私聊机器人使用 !qmulti ' + context.extra.forward[0] + ' 以查看转发消息]' : '';
+                    context.text = `「合并转发 ${messages.length} 条」\n` + lines.join('\n') + qmultiHint;
                 }
             } catch (e) {
                 winston.warn(`Failed to fetch forward msg summary: ${e.message}`);
