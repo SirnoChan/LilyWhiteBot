@@ -22,11 +22,12 @@ module.exports = (pluginManager, options) => {
 
     bridge.addCommand(command, (context) => {
         if (context.isPrivate) {
-          if (['Telegram', 'IRC', 'Discord'].includes(context._from_client)) {
+          if (['Telegram', 'IRC', 'Discord', 'QQ', 'Matrix'].includes(context._from_client)) {
               let handler = pluginManager.handlers.get(context._from_client);
               let qqHandler = pluginManager.handlers.get('QQ');
               qqHandler.getForwardMsg(context.param.split(' ')[0]).then(res=>{
-                let target = context._from_client == 'IRC' ? context.from : context.to;
+                // QQ/IRC 私聊的 to 是機器人自身，回覆目標應為發起查詢的用戶
+                let target = ['IRC', 'QQ'].includes(context._from_client) ? context.from : context.to;
                 if (res.status=='ok') {
                   let msgArray = [];
                   if (Array.isArray(res.data)) {
