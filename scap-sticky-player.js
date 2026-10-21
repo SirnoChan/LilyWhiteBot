@@ -36,6 +36,7 @@
     /* ---------- 页面卸载时保存 sm2 / 原生 audio 的播放状态 ---------- */
 
     var collectPlaying = function () {
+        console.error('[scap-sticky] pagehide: collecting playing audio');
         // SoundManager2：全局 soundManager 对象的 sounds
         var found = null;
         try {
@@ -77,7 +78,7 @@
         audio.src = url;
         var bar = document.createElement('div');
         bar.id = 'scap-sticky-bar';
-        bar.style.cssText = 'position:fixed;bottom:0;left:0;right:0;z-index:99998;' +
+        bar.style.cssText = 'position:fixed;bottom:0;left:0;width:280px;z-index:99998;' +
             'background:rgba(30,30,30,0.92);color:#eee;padding:8px 14px;' +
             'font-size:13px;display:flex;align-items:center;gap:10px;' +
             'box-shadow:0 -2px 8px rgba(0,0,0,0.3);font-family:sans-serif;';
@@ -143,6 +144,7 @@
 
     document.addEventListener('DOMContentLoaded', function () {
         var st = restoreState();
+        console.error('[scap-sticky] DOMContentLoaded: state =', JSON.stringify(st));
         if (!st || !st.playing || !st.url) return;
 
         // 如果当前页面本身就渲染了这个音频的播放器（Compact Audio Player 短代码），
