@@ -17,8 +17,12 @@
     var COOKIE_CFG = 'domain=.hourai.xyz; path=/; max-age=86400';  // 1 天自动过期
 
     var saveState = function (url, title, time) {
+        // URL 转相对路径（同源断点续播），cookie 值极短永不超 4KB
+        var u;
+        try { u = new URL(url, location.origin); } catch (e) { return; }
+        var rel = u.pathname + u.search;
         document.cookie = STATE_KEY + '=' + encodeURIComponent(JSON.stringify({
-            playing: true, url: url, title: title || url.split('/').pop(), time: time || 0
+            p: 1, u: rel, t: Math.floor(time || 0)
         })) + '; ' + COOKIE_CFG;
     };
 
@@ -74,8 +78,10 @@
     /* ---------- 跨页续播的迷你播放条 ---------- */
 
     var createStickyBar = function (url, title, resumeAt) {
+        var full;
+        try { full = new URL(url, location.origin).toString(); } catch (e) { full = url; }
         var audio = new Audio();
-        audio.src = url;
+        audio.src = full;
         var bar = document.createElement('div');
         bar.id = 'scap-sticky-bar';
         bar.style.cssText = 'position:fixed;bottom:0;left:0;width:280px;z-index:99998;' +
