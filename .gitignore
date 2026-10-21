@@ -64,3 +64,4 @@ plugins/data/
 weichuncai-work/
 activate-wcc.php
 check-wcc.php
+fix-scap-ver.py
