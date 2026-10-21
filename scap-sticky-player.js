@@ -13,23 +13,23 @@
     'use strict';
 
     var STATE_KEY = 'scap-sticky-state';
+    // cookie 而非 sessionStorage：状态需跨子域共享（hourai.xyz/blog 与 wiki.hourai.xyz）
+    var COOKIE_CFG = 'domain=.hourai.xyz; path=/; max-age=86400';  // 1 天自动过期
 
     var saveState = function (url, title, time) {
-        try {
-            sessionStorage.setItem(STATE_KEY, JSON.stringify({
-                playing: true, url: url, title: title || url.split('/').pop(), time: time || 0
-            }));
-        } catch (e) { /* 忽略 */ }
+        document.cookie = STATE_KEY + '=' + encodeURIComponent(JSON.stringify({
+            playing: true, url: url, title: title || url.split('/').pop(), time: time || 0
+        })) + '; ' + COOKIE_CFG;
     };
 
     var clearState = function () {
-        try { sessionStorage.removeItem(STATE_KEY); } catch (e) { /* 忽略 */ }
+        document.cookie = STATE_KEY + '=; ' + COOKIE_CFG.replace('max-age=86400', 'max-age=0');
     };
 
     var restoreState = function () {
+        var m = document.cookie.match(new RegExp('(^| )' + STATE_KEY + '=([^;]*)'));
         try {
-            var raw = sessionStorage.getItem(STATE_KEY);
-            return raw ? JSON.parse(raw) : null;
+            return m ? JSON.parse(decodeURIComponent(m[2])) : null;
         } catch (e) { return null; }
     };
 
