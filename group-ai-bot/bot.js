@@ -169,11 +169,13 @@ const onGroupMessage = async (ev) => {
     while (h.length > (CFG.maxHistory || 20)) h.shift();
     history.set(gid, h);
 
-    const triggered = hasAtSelf(ev) || repliesToBot(ev);
+    const explicit = hasAtSelf(ev) || repliesToBot(ev);
+    const triggered = explicit
+        || (CFG.triggerAll && text);   // 免触发模式：任意文本消息都可能引出回答（仍受冷却/限额约束）
     if (!triggered) return;
 
     if (!CFG.gemini.apiKey) {
-        return void reply(gid, '（AI 未配置 Gemini key，请联系管理员）');
+        return void (explicit ? reply(gid, '（AI 未配置 Gemini key，请联系管理员）') : undefined);
     }
 
     // 限额与冷却
