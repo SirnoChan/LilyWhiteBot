@@ -79,6 +79,32 @@ const napcatApi = async (endpoint, payload) => {
     return res.json();
 };
 
+// 把 AI 的回答以標準 OneBot 事件形式投遞給 LWBot 的事件入口，
+// 由 LWBot 橋接到其他平台（NapCat 的 WS/HTTP 服務端不上報自我消息，只能自己送）
+const forwardToLwbot = async (gid, text) => {
+    if (!CFG.lwbotPostUrl) return;
+    try {
+        await fetch(CFG.lwbotPostUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                post_type: 'message',
+                message_type: 'group',
+                group_id: Number(gid),
+                user_id: Number(SELF),
+                self_id: Number(SELF),
+                time: Math.floor(Date.now() / 1000),
+                message_id: Date.now(),
+                sender: { nickname: 'Lily White', card: 'Lily' },
+                message: [{ type: 'text', data: { text: String(text) } }],
+            }),
+            signal: AbortSignal.timeout(10000),
+        });
+    } catch (e) {
+        log(`lwbot forward failed: ${e.message}`);
+    }
+};
+
 const geminiChat = async (messages) => {
     // 聯網搜索：走 Gemini 原生端點（OpenAI 兼容層不支持 google_search 工具）
     if (CFG.gemini.search) {
@@ -207,6 +233,7 @@ const onGroupMessage = async (ev) => {
         const answer = await geminiChat(msgs);
         h.push({ role: 'assistant', text: answer.slice(0, 300) });
         await reply(gid, answer);
+        await forwardToLwbot(gid, answer);
         log(`[${gid}] ${sender}: ${text.slice(0, 50)} -> ${answer.slice(0, 60)}`);
     } catch (e) {
         log(`[${gid}] gemini error: ${e.message}`);
