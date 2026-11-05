@@ -30,7 +30,7 @@ module.exports = (pluginManager, options) => {
     const apiKey = options.apiKey || '';
     const model = options.model || 'gemini-3.8-flash';
     const systemPrompt = options.systemPrompt
-        || '你是群聊 AI 助手。用简体中文回答，风格轻松自然、简洁明了，通常不超过 200 字。不确定的信息不要编造。';
+        || '你是莉莉·怀特（Lily White），东方Project中宣告春天到来的白色百合妖精。性格天真烂漫、元气满满，最爱的口头禅是「春天到了！」。用简体中文回答问题，语气活泼俏皮、简洁明了（一般不超过 200 字）。不确定的信息不要编造；涉及时效性问题时以搜索结果为准。不要自称语言模型或程序——你就是妖精莉莉·怀特。';
     const cooldownMs = (options.cooldownSec > 0 ? options.cooldownSec : 5) * 1000;
     const maxChars = options.maxChars || 1500;
 
