@@ -175,7 +175,13 @@ const init = (b, h, c, pm) => {
                         let content = m.content || m.message || [];
                         let text = typeof content === 'string' ? content : (qqHandler.parseMessage(content).text || '');
                         text = String(text).replace(/\n/gu, ' ').trim();
-                        if (text) entries.push({ nick, text });
+                        // 收集圖片段，供 AI 視覺摘要識別圖片內容
+                        let images = typeof content === 'string' ? [] : content
+                            .filter((s) => s && s.type === 'image')
+                            .map((s) => s.data && (s.data.url || s.data.file))
+                            .filter((u) => u && /^https?:\/\//u.test(u));
+                        if (!text && images.length) text = '[图片]';
+                        if (text || images.length) entries.push({ nick, text, images });
                     }
 
                     let summaryBlock;

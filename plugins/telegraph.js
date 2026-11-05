@@ -249,6 +249,119 @@ const markdownToNodes = (md, baseUrl) => {
     return { title, nodes };
 };
 
+    /**
+     * 清洗知乎经 jina 抓回的 markdown：剔除页头导航、登录墙、
+     * 互动控件（赞同/评论/分享）、统计数据行，以及页尾的登录弹窗与
+     * ICP 备案整段杂讯，仅保留问题、话题与回答正文。
+     */
+    const ZHIHU_CHROME_LINE_RES = [
+        /^\*{0,2}[\d,，.]+\s*万?\*{0,2}$/u,                              // 纯数字统计行（**2,466** 等）
+        /(?:登录|登錄)\/(?:注册|註冊)\s*$/u,
+        /^切换模式$/u, /^切換模式$/u,
+        /关注问题/u, /關注問題/u,                                        // 关注问题​写回答
+        /^关注者$/u, /^關注者$/u, /^被浏览/u, /^被瀏覽/u,
+        /^​?邀请回答/u, /^​?邀請回答/u, /^​?好问题/u, /^​?好問題/u,
+        /\d+\s*条评论/u, /\d+\s*條評論/u,
+        /^​?分享\s*$/u, /^收起\s*$/u,
+        /人赞同了该回答/u, /人贊同了該回答/u,
+        /^​?赞同\s*[\d,.]+/u, /^​?贊同\s*[\d,.]+/u,
+        /登录后你可以/u, /登錄後你可以/u,
+        /^不限量看优质回答/u, /^不限量看優質回答/u,
+        /^登录\s*$/u, /^登錄\s*$/u,
+        /话题收录/u, /話題收錄/u,
+        /更多回答/u,
+        /查看全部\s*[\d,]+\s*个回答/u, /查看全部\s*[\d,]+\s*個回答/u,
+        /^​?\s*关注\s*$/u, /^​?\s*關注\s*$/u,
+        /\]\(https?:\/\/www\.zhihu\.com\/topic\//u,                   // 話題標籤行
+        /^\[!\[[^^\]]*\]\([^)]*\)\]\(https?:\/\/(?:www\.)?zhihu\.com\/people\//u,  // 作者頭像卡（嵌套圖片鏈接會渲染成原始文本）
+        /\]\(https?:\/\/www\.zhihu\.com\/signin/u,                       // 登录导航链接行
+        /\]\(https:\/\/zhida\.zhihu\.com\//u,                            // 直答导航
+        /\]\(javascript:/iu,                                             // javascript: 空壳链接
+        /^\[\]\(/u,                                                    // 空文本链接行
+        /ZhiHu logo|wechat-share-logo/iu,
+    ];
+    // 页尾登录弹窗/备案区的起始标志（取最早出现者，其后全部截断）
+    const ZHIHU_TAIL_MARKERS = [
+        '登录知乎', '登錄知乎', '想来知乎工作', '想來知乎工作',
+        '京ICP证', '京ICP備', '打开知乎App', '打開知乎App', '扫码下载知乎',
+    ];
+
+    const ZHIHU_AUTHOR_CARD_RES = [
+        /^\[!\[[^\]]*\]\([^)]*\)\]\(https?:\/\/(?:www\.)?zhihu\.com\/people\/[^^\s)]*\)\s*$/u,   // 頭像作者卡
+        /^\[[^^\]]+\]\(https?:\/\/(?:www\.)?zhihu\.com\/people\/[^^\s)]*\)\s*$/u,               // 純暱稱行
+    ];
+    // 結構性行（非純文本）：標題/引用/列表/圖片/鏈接/代碼/jina 頭部
+    const ZHIHU_STRUCTURED_RE = /^(#|>|```|Title:|URL Source:|Markdown Content:|!\[|\[)/u;
+
+    const cleanZhihuJinaMarkdown = (md, isAnswer = false) => {
+        const lines = md.split(/\r?\n/u);
+        // 1. 截断页尾登录弹窗/备案区
+        let cutAt = lines.length;
+        for (let i = 0; i < lines.length; i++) {
+            if (ZHIHU_TAIL_MARKERS.some((m) => lines[i].includes(m))) {
+                cutAt = i;
+                break;
+            }
+        }
+        // 回答頁（/answer/）：只保留目標回答——
+        // 在第二張作者卡（下一個回答的作者）處截斷，丟掉其後所有「其他回答」；
+        // 第一張作者卡之前的純文本行是問題描述的折叠摘要，一併丢弃
+        let firstCard = -1;
+        if (isAnswer) {
+            const cardIdx = [];
+            let lastAvatar = -10;
+            for (let i = 0; i < cutAt; i++) {
+                if (ZHIHU_AUTHOR_CARD_RES[0].test(lines[i])) {
+                    cardIdx.push(i);                                     // 頭像卡＝新回答的起點
+                    lastAvatar = i;
+                } else if (ZHIHU_AUTHOR_CARD_RES[1].test(lines[i]) && i - lastAvatar > 2) {
+                    cardIdx.push(i);                                     // 不緊跟頭像的獨立暱稱行才算卡
+                }
+                if (cardIdx.length === 2) break;
+            }
+            if (cardIdx.length >= 1) firstCard = cardIdx[0];
+            if (cardIdx.length >= 2) cutAt = cardIdx[1];
+        }
+
+        // 2. 逐行过滤控件杂讯；剥掉「…显示全部」折叠标记
+        const seenHeadings = new Set();
+        const kept = [];
+        for (let lineIdx = 0; lineIdx < cutAt; lineIdx++) {
+            const line = lines[lineIdx];
+            const cleaned = line.replace(/…\s*显示全部[​‌‍﻿\s]*$/u, '').replace(/…\s*顯示全部[​‌‍﻿\s]*$/u, '');
+            if (cleaned.trim() === '') {
+                kept.push('');
+                continue;                                                // 保留真实段落空行
+            }
+            if (cleaned.replace(/[\u200b\u200c\u200d\ufeff\s*]/gu, '') === '') {
+                continue;                                                // 只剩零宽字符/星号的行
+            }
+            if (isAnswer && firstCard >= 0 && lineIdx < firstCard && !ZHIHU_STRUCTURED_RE.test(cleaned.trim())) {
+                continue;                                                // 問題描述（純文本折叠摘要）
+            }
+            const bare = cleaned.replace(/[​‌‍﻿]/gu, '');
+            // 回答頁：正文裡的作者暱稱行（署名欄已有，避免重複）
+            if (isAnswer && /^\[[^^\]]+\]\(https?:\/\/(?:www\.)?zhihu\.com\/people\/[^^\s)]*\)\s*$/u.test(bare)) {
+                continue;
+            }
+            // 標題在頁頭和正文出現兩次，只保留首次
+            const h = bare.match(/^#{1,6}\s+(.+)$/u);
+            if (h) {
+                if (seenHeadings.has(h[1])) {
+                    continue;
+                }
+                seenHeadings.add(h[1]);
+            }
+            if (ZHIHU_CHROME_LINE_RES.some((re) => re.test(bare))) {
+                continue;
+            }
+            // 知乎圖床的 /80/ 等前綴是縮略圖，去掉取原圖
+            kept.push(cleaned.replace(/(https?:\/\/pic\d*\.zhimg\.com\/)(?:50|75|80|xs|s|b|m|t|r|l|hd)\//gu, '$1'));
+        }
+        // 3. 收敛连续空行
+        return kept.join('\n').replace(/\n{3,}/gu, '\n\n');
+    };
+
 const telegraphPlugin = (pluginManager, options) => {
     const tg = pluginManager.handlers.get('Telegram');
 
@@ -261,6 +374,20 @@ const telegraphPlugin = (pluginManager, options) => {
     const maxChars = options.maxChars === undefined ? 60000 : options.maxChars;
     const jinaFallback = options.jinaFallback !== false;
     const jinaApiKey = options.jinaApiKey || '';
+
+    // 反爬攔截頁特徵：知乎等站點對可疑流量返回 HTTP 200 的攔截頁而非 403
+    //（JS 挑戰頁 zh-zse-ck、「安全驗證」頁），必須按內容特徵識別，
+    // 否則攔截頁會被當成正文轉換出去
+    const ANTIBOT_TITLE_RE = /安全驗證|安全验证|訪問驗證|访问验证|異常訪問|异常访问/iu;
+    const ANTIBOT_BODY_RE = /网络环境存在异常|網絡環境存在異常|zh-zse-ck|请完成验证|請完成驗證/iu;
+
+    // 適用於 HTML（<title> 標籤）與 jina markdown（Title: 行）
+    const looksLikeAntiBot = (text) => {
+        const title = (text.match(/<title[^>]*>([^<]*)<\/title>/iu)
+            || text.match(/^Title:\s*(.+)$/mu)
+            || [])[1] || '';
+        return ANTIBOT_TITLE_RE.test(title) || ANTIBOT_BODY_RE.test(text.slice(0, 4000));
+    };
 
     /**
      * 抓取页面 HTML。直接抓取失败（403 等反爬拦截）时，
@@ -283,7 +410,11 @@ const telegraphPlugin = (pluginManager, options) => {
             if (!res.ok) {
                 throw new Error(`HTTP ${res.status}`);
             }
-            return { html: await res.text(), via: 'direct' };
+            const html = await res.text();
+            if (looksLikeAntiBot(html)) {
+                throw new Error('anti-bot page (direct fetch)');
+            }
+            return { html, via: 'direct' };
         } catch (e) {
             if (!jinaFallback) throw e;
             winston.info(`[telegraph] direct fetch failed (${e.message}), trying r.jina.ai fallback`);
@@ -301,7 +432,10 @@ const telegraphPlugin = (pluginManager, options) => {
                     throw new Error(`HTTP ${res.status} (via r.jina.ai)`);
                 }
                 const body = await res.text();
-                console.error(`DBG jinaFetch: status=${res.status} typeof=${typeof body} len=${body.length} head=${JSON.stringify(body.slice(0, 60))}`);
+                // jina 也被反爬擋下時：CAPTCHA 警告或極短正文；先拋出以觸發重試（可能換出口）
+                if (looksLikeAntiBot(body) || /maybe requiring CAPTCHA/i.test(body)) {
+                    throw new Error('站點反爬攔截（安全驗證頁），無法抓取 (via r.jina.ai)');
+                }
                 return body;
             };
             // jina 的 html 輸出模式對中文頁面有編碼 bug（輸出雙重編碼亂碼），
@@ -334,12 +468,56 @@ const telegraphPlugin = (pluginManager, options) => {
         return t.trim();
     };
 
+
     /**
      * 从页面标题提取作者（知乎格式：「问题 - 作者 的回答」）。
      */
     const authorFromTitle = (docTitle) => {
         const m = (docTitle || '').match(/[-–—]\s*(.{1,30}?)\s*的回答\s*$/u);
         return m && m[1];
+    };
+
+    /**
+     * 知乎圖床（zhimg.com）有防盜鏈，telegra.ph 頁面上載入會失敗，
+     * 把圖片轉存到自己的圖床（B2），永久保留（不入過期清理表）。
+     */
+    const rehostZhihuImages = async (nodes) => {
+        const s3cfg = pluginManager.global.servemediaS3;
+        if (!s3cfg || !s3cfg.bucket) return;
+        const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
+        const client = new S3Client({
+            endpoint: s3cfg.endpoint,
+            region: s3cfg.region || 'auto',
+            credentials: { accessKeyId: s3cfg.accessKeyId, secretAccessKey: s3cfg.secretAccessKey },
+        });
+        for (const node of nodes) {
+            if (node.tag !== 'img' || !node.href || !/pic\d*\.zhimg\.com/u.test(node.href)) continue;
+            try {
+                const res = await fetch(node.href, {
+                    headers: {
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+                        'Referer': 'https://www.zhihu.com/',
+                    },
+                    signal: AbortSignal.timeout(20000),
+                });
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                const buf = Buffer.from(await res.arrayBuffer());
+                const ext = (node.href.match(/\.(webp|jpe?g|png|gif)/iu) || ['.jpg'])[0].toLowerCase().replace('.jpeg', '.jpg');
+                const key = (s3cfg.keyPrefix || 'lwb/') + require('crypto').createHash('md5').update(buf).digest('hex') + ext;
+                await client.send(new PutObjectCommand({
+                    Bucket: s3cfg.bucket,
+                    Key: key,
+                    Body: buf,
+                    ContentType: res.headers.get('content-type') || 'image/jpeg',
+                }));
+                if (s3cfg.publicBase) {
+                    node.href = s3cfg.publicBase.replace(/\/+$/u, '') + '/' + key;
+                }
+                winston.info(`[telegraph] rehosted zhihu image -> ${key} (${buf.length}B)`);
+            } catch (e) {
+                winston.warn(`[telegraph] image rehost failed (${e.message}), keeping original URL`);
+            }
+        }
     };
 
     const convert = async (context, rawUrl) => {
@@ -379,9 +557,16 @@ const telegraphPlugin = (pluginManager, options) => {
             if (via === 'jina-markdown') {
                 // jina markdown 路徑：純文本不走 Readability（純文本偶爾會讓 Readability
                 // 返回空殼 article，導致跳過 markdown 賦值而崩潰/產生 Untitled 頁面）
-                jinaMarkdown = html;
+                const isZhihu = /(^|\.)zhihu\.com$/iu.test(url.hostname);
+                jinaMarkdown = isZhihu
+                    ? cleanZhihuJinaMarkdown(html, /\/answer\//u.test(url.pathname))
+                    : html;
                 jinaTitle = (html.match(/^Title:\s*(.+)$/mu) || [])[1] || '';
-                article = { title: jinaTitle, byline: '', content: '' };
+                // 標題去掉「 - 作者 的回答/文章」「 - 知乎」尾巴（作者已在署名欄顯示）
+                const displayTitle = jinaTitle
+                    .replace(/\s*[-–—]\s*.{1,30}?\s*的(?:回答|文章)\s*$/u, '')
+                    .replace(/\s*[-–—]\s*知乎\s*$/u, '');
+                article = { title: displayTitle, byline: '', content: '' };
                 docTitle = jinaTitle;
                 nodes = markdownToNodes(jinaMarkdown, url.toString()).nodes;
             } else {
@@ -408,6 +593,9 @@ const telegraphPlugin = (pluginManager, options) => {
                 nodes = nodes.slice(0, Math.max(8, Math.floor(nodes.length * maxChars / size)));
                 nodes.push('…（內容過長，已截斷）');
             }
+
+            // 知乎圖片轉存自家圖床（防盜鏈導致 telegra.ph 上載入失敗）
+            await rehostZhihuImages(nodes);
 
             // 署名：原作者（原網站名），署名鏈接指向原文。
             // 作者優先級：頁面標題的知乎格式 > Readability/meta 的 byline（清洗後）> 網站名
@@ -478,3 +666,4 @@ ${e.stack || ''}`);
 module.exports = telegraphPlugin;
 module.exports.markdownToNodes = markdownToNodes;
 module.exports.parseInline = parseInline;
+module.exports.cleanZhihuJinaMarkdown = cleanZhihuJinaMarkdown;

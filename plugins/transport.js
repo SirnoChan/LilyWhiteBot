@@ -36,6 +36,8 @@ module.exports = (pluginManager, options) => {
         path.join(__dirname, 'data'),
         (options.options.servemedia && options.options.servemedia.type === 's3') ? options.options.servemedia.s3 : null,
     );
+    // 供其他插件（telegraph 轉存知乎圖片等）復用圖床配置
+    pluginManager.global.servemediaS3 = (options.options.servemedia && options.options.servemedia.type === 's3') ? options.options.servemedia.s3 : null;
     bridge.BridgeMsg = BridgeMsg;
     bridge.handlers = pluginManager.handlers;
     pluginManager.global.BridgeMsg = BridgeMsg;
