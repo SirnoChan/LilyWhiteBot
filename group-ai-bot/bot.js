@@ -106,56 +106,119 @@ const forwardToLwbot = async (gid, text) => {
     }
 };
 
-const geminiChat = async (messages) => {
-    // 聯網搜索：走 Gemini 原生端點（OpenAI 兼容層不支持 google_search 工具）
-    if (CFG.gemini.search) {
-        const sys = messages.find((m) => m.role === 'system');
-        const contents = messages
-            .filter((m) => m.role !== 'system')
-            .map((m) => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] }));
-        const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${CFG.gemini.model}:generateContent`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'x-goog-api-key': CFG.gemini.apiKey },
-            body: JSON.stringify({
-                contents,
-                ...(sys ? { systemInstruction: { parts: [{ text: sys.content }] } } : {}),
-                tools: [{ google_search: {} }],
-                generationConfig: { temperature: 0.7, maxOutputTokens: 800 },
-            }),
-            signal: AbortSignal.timeout(60000),
-        });
-        if (!res.ok) {
-            const t = await res.text();
-            throw new Error(`Gemini HTTP ${res.status}: ${t.slice(0, 200)}`);
-        }
-        const data = await res.json();
-        const cand = data.candidates && data.candidates[0];
-        const out = cand && cand.content && cand.content.parts
-            ? cand.content.parts.map((p) => p.text || '').join('').trim()
-            : '';
-        if (!out) throw new Error('Gemini 返回空');
-        return out;
+// 下載圖片並轉成 Gemini inline_data（>4MB 或抓取失敗則跳過）
+const fetchImagePart = async (url) => {
+    try {
+        const res = await fetch(url, { signal: AbortSignal.timeout(15000) });
+        if (!res.ok) return null;
+        const buf = Buffer.from(await res.arrayBuffer());
+        if (!buf.length || buf.length > 4 * 1024 * 1024) return null;
+        const mime = (res.headers.get('content-type') || 'image/jpeg').split(';')[0];
+        return { inline_data: { mime_type: mime, data: buf.toString('base64') } };
+    } catch (e) {
+        return null;
     }
+};
 
-    const res = await fetch(CFG.gemini.apiBase.replace(/\/+$/u, '') + '/chat/completions', {
+// msgs: [{ role: 'user'|'assistant'|'system', content, images? }]（OpenAI 風格）
+// 一律走 Gemini 原生端點：支持 google_search 聯網 + inline_data 圖片識別
+const geminiChat = async (msgs, images = []) => {
+    const sys = msgs.find((m) => m.role === 'system');
+    const contents = [];
+    for (const m of msgs) {
+        if (m.role === 'system') continue;
+        contents.push({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] });
+    }
+    if (images.length && contents.length) {
+        const last = contents[contents.length - 1];
+        let n = 0;
+        for (const url of images) {
+            if (n >= (CFG.maxImages || 3)) break;
+            const part = await fetchImagePart(url);
+            if (part) {
+                last.parts.push(part);
+                n++;
+            }
+        }
+    }
+    const body = {
+        contents,
+        generationConfig: { temperature: 0.7, maxOutputTokens: 800 },
+    };
+    if (sys) body.systemInstruction = { parts: [{ text: sys.content }] };
+    if (CFG.gemini.search) body.tools = [{ google_search: {} }];
+    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${CFG.gemini.model}:generateContent`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${CFG.gemini.apiKey}` },
-        body: JSON.stringify({
-            model: CFG.gemini.model,
-            messages,
-            temperature: 0.7,
-            max_tokens: 800,
-        }),
-        signal: AbortSignal.timeout(45000),
+        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': CFG.gemini.apiKey },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(60000),
     });
     if (!res.ok) {
         const t = await res.text();
         throw new Error(`Gemini HTTP ${res.status}: ${t.slice(0, 200)}`);
     }
     const data = await res.json();
-    const out = data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content;
+    const cand = data.candidates && data.candidates[0];
+    const out = cand && cand.content && cand.content.parts
+        ? cand.content.parts.map((p) => p.text || '').join('').trim()
+        : '';
     if (!out) throw new Error('Gemini 返回空');
-    return String(out).trim();
+    return out;
+};
+
+const pendingTimers = new Map();  // groupId -> 防抖定时器（合并连续消息）
+
+// 回應：讀取群歷史（含防抖窗口內合併的多條消息與圖片），生成一條回答
+const respondNow = async (gid, explicit) => {
+    const h = history.get(gid) || [];
+    if (!h.length) return;
+
+    if (!CFG.gemini.apiKey) {
+        return void (explicit ? reply(gid, '（AI 未配置 Gemini key，请联系管理员）') : undefined);
+    }
+
+    // 限额与冷却
+    const today = new Date().toISOString().slice(0, 10);
+    if (daily.date !== today) {
+        daily.date = today;
+        daily.n = 0;
+    }
+    if (daily.n >= (CFG.dailyLimit || 200)) {
+        return void (explicit ? reply(gid, '（今天的额度用完了，明天再来吧）') : undefined);
+    }
+    const now = Date.now();
+    if (now - (lastReplyAt.get(gid) || 0) < (CFG.cooldownSec || 3) * 1000) return;
+    lastReplyAt.set(gid, now);
+    daily.n++;
+
+    // 组装上下文：最近 maxHistory 条，标注说话人
+    const msgs = [{ role: 'system', content: CFG.systemPrompt || '你是群聊里的 AI 助手。用简体中文回答，简洁自然，通常不超过 200 字。不确定的信息不要编造。' }];
+    for (const m of h.slice(-(CFG.maxHistory || 20))) {
+        const prefix = m.role === 'assistant' ? '' : `${m.name}：`;
+        msgs.push({ role: m.role, content: prefix + (m.text || '') });
+    }
+
+    // 图片：取「上一条 AI 回复之后」的所有图片（合计最多 maxImages 张）
+    let images = [];
+    for (let i = h.length - 1; i >= 0; i--) {
+        if (h[i].role === 'assistant') break;
+        if (Array.isArray(h[i].images)) images.push(...h[i].images);
+    }
+    images = images.slice(-(CFG.maxImages || 3));
+
+    try {
+        const answer = await geminiChat(msgs, images);
+        h.push({ role: 'assistant', text: answer.slice(0, 300) });
+        while (h.length > (CFG.maxHistory || 20)) h.shift();
+        // 已識別的圖片從歷史中移除，避免下次重複送模型
+        for (const m of h) m.images = undefined;
+        await reply(gid, answer);
+        await forwardToLwbot(gid, answer);
+        log(`[${gid}] -> ${answer.slice(0, 60)}`);
+    } catch (e) {
+        log(`[${gid}] gemini error: ${e.message}`);
+        await reply(gid, '（AI 出错了，稍后再试）').catch(() => {});
+    }
 };
 
 const onGroupMessage = async (ev) => {
@@ -165,6 +228,12 @@ const onGroupMessage = async (ev) => {
 
     const sender = (ev.sender && (ev.sender.card || ev.sender.nickname)) || uid;
     const text = textOf(ev);
+    const segs = Array.isArray(ev.message) ? ev.message : [];
+    // 收集圖片段 URL（供 AI 識別）
+    const images = segs
+        .filter((sg) => sg && sg.type === 'image')
+        .map((sg) => sg.data && sg.data.url)
+        .filter((u) => u && /^https?:\/\//u.test(u));
     const isAdmin = (CFG.adminQQ || []).includes(uid);
 
     // 管理指令（任意群，无需先启用）
@@ -190,9 +259,11 @@ const onGroupMessage = async (ev) => {
 
     if (!enabledGroups.has(gid)) return;   // 核心约束：只在指定群发言
 
-    // 群历史记录（所有文本消息，作为触发时的上下文）
+    // 群历史记录（文本 + 图片 URL，作为触发时的上下文）
     const h = history.get(gid) || [];
-    if (text) h.push({ role: 'user', name: sender, text: text.slice(0, 300) });
+    if (text || images.length) {
+        h.push({ role: 'user', name: sender, text: (text || '[图片]').slice(0, 300), images: images.length ? images : undefined });
+    }
     while (h.length > (CFG.maxHistory || 20)) h.shift();
     history.set(gid, h);
 
@@ -202,48 +273,23 @@ const onGroupMessage = async (ev) => {
         return;
     }
     lastMsgText.set(gid, text || '');
-    const triggered = explicit
-        || (CFG.triggerAll && text);   // 免触发模式：任意文本消息都可能引出回答（仍受冷却/限额约束）
-    if (!triggered) return;
 
-    if (!CFG.gemini.apiKey) {
-        return void (explicit ? reply(gid, '（AI 未配置 Gemini key，请联系管理员）') : undefined);
-    }
-
-    // 限额与冷却
-    const today = new Date().toISOString().slice(0, 10);
-    if (daily.date !== today) {
-        daily.date = today;
-        daily.n = 0;
-    }
-    if (daily.n >= (CFG.dailyLimit || 200)) {
-        return void reply(gid, '（今天的额度用完了，明天再来吧）');
-    }
-    const now = Date.now();
-    if (now - (lastReplyAt.get(gid) || 0) < (CFG.cooldownSec || 3) * 1000) return;
-    lastReplyAt.set(gid, now);
-    daily.n++;
-
-    // 组装上下文：最近 maxHistory 条，标注说话人
-    const msgs = [{ role: 'system', content: CFG.systemPrompt || '你是群聊里的 AI 助手。用简体中文回答，简洁自然，通常不超过 200 字。不确定的信息不要编造。' }];
-    for (const m of h.slice(-(CFG.maxHistory || 20))) {
-        const prefix = m.role === 'assistant' ? '' : `${m.name}：`;
-        msgs.push({ role: m.role, content: prefix + m.text });
-    }
-    // 最后一条必须是触发者的提问（若最后一条是历史里刚记下的文本则已含）
-    if (!h.length || h[h.length - 1].text !== text) {
-        msgs.push({ role: 'user', content: `${sender}：${text}` });
+    // @/回复：立即取消未决的防抖并马上回答
+    if (explicit) {
+        if (pendingTimers.has(gid)) {
+            clearTimeout(pendingTimers.get(gid));
+            pendingTimers.delete(gid);
+        }
+        return void respondNow(gid, true).catch((e) => log(`respond error: ${e.message}`));
     }
 
-    try {
-        const answer = await geminiChat(msgs);
-        h.push({ role: 'assistant', text: answer.slice(0, 300) });
-        await reply(gid, answer);
-        await forwardToLwbot(gid, answer);
-        log(`[${gid}] ${sender}: ${text.slice(0, 50)} -> ${answer.slice(0, 60)}`);
-    } catch (e) {
-        log(`[${gid}] gemini error: ${e.message}`);
-        await reply(gid, '（AI 出错了，稍后再试）').catch(() => {});
+    // 免触发模式：防抖合并——等一小段把连续多条消息凑齐后一次回应
+    if (CFG.triggerAll && (text || images.length)) {
+        if (pendingTimers.has(gid)) clearTimeout(pendingTimers.get(gid));
+        pendingTimers.set(gid, setTimeout(() => {
+            pendingTimers.delete(gid);
+            respondNow(gid, false).catch((e) => log(`respond error: ${e.message}`));
+        }, CFG.debounceMs || 6000));
     }
 };
 
