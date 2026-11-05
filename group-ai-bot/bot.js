@@ -37,6 +37,7 @@ const saveState = () => {
 const history = new Map();        // groupId -> [{ role: 'user'|'assistant', name?, text }]
 const recentBotMsgs = new Map();  // bot 消息 id -> 时间戳（用于识别「回复机器人」触发）
 const lastReplyAt = new Map();    // groupId -> ts（冷却）
+const lastMsgText = new Map();    // groupId -> 上一条消息文本（重复刷屏去重）
 const daily = { date: '', n: 0 };
 
 const SELF = String(CFG.selfId);
@@ -196,6 +197,11 @@ const onGroupMessage = async (ev) => {
     history.set(gid, h);
 
     const explicit = hasAtSelf(ev) || repliesToBot(ev);
+    // 免触发模式下去重：与上一条消息完全相同的文本（重复刷屏/双发）不重复回应
+    if (!explicit && CFG.triggerAll && text && text === (lastMsgText.get(gid) || '')) {
+        return;
+    }
+    lastMsgText.set(gid, text || '');
     const triggered = explicit
         || (CFG.triggerAll && text);   // 免触发模式：任意文本消息都可能引出回答（仍受冷却/限额约束）
     if (!triggered) return;
