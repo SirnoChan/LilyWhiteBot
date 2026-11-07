@@ -222,6 +222,26 @@ const drawImage = async (prompt) => {
     return { caption: caption.trim(), file };
 };
 
+// 免費兜底：Pollinations（flux，無需 key），Gemini 額度盡或失敗時啟用
+const drawImageFallback = async (prompt) => {
+    const res = await fetch(`https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=1024&height=1024&nologo=true&model=flux`, {
+        signal: AbortSignal.timeout(180000),
+    });
+    if (!res.ok) throw new Error(`pollinations HTTP ${res.status}`);
+    const buf = Buffer.from(await res.arrayBuffer());
+    if (!buf.length) throw new Error('pollinations 返回空');
+    return { caption: '', file: 'base64://' + buf.toString('base64') };
+};
+
+const drawImageAny = async (prompt) => {
+    try {
+        return await drawImage(prompt);
+    } catch (e) {
+        log(`draw: gemini image failed (${e.message}), falling back to pollinations`);
+        return await drawImageFallback(prompt);
+    }
+};
+
 // 發送 AI 回答：markdown 圖片與圖片直鏈真正發成 QQ 圖片；抓不到的保留為可點擊鏈接
 const sendAnswer = async (gid, answer) => {
     const maxImgs = CFG.maxReplyImages || 3;
@@ -300,25 +320,37 @@ const respondNow = async (gid, explicit) => {
         // 要畫圖時在回答末尾輸出 [DRAW: 提示詞]，由圖像模型接手生成
         const answer = await geminiChat(msgs, images);
 
-        const drawMatch = answer.match(/\[DRAW:\s*([\s\S]+?)\]\s*$/u);
-        if (CFG.gemini.imageModel && drawMatch) {
-            const chatText = answer.slice(0, drawMatch.index).trim();
+        // 支持多张：回答里的每个 [DRAW: ...] 标记各生成一张（上限 maxDrawImages）
+        const drawMatches = [...answer.matchAll(/\[DRAW:\s*([^\]]{5,600})\]/gu)];
+        if (CFG.gemini.imageModel && drawMatches.length) {
+            const chatText = answer.slice(0, drawMatches[0].index).trim();
+            const maxDraws = CFG.maxDrawImages || 3;
             try {
-                const { caption, file } = await drawImage(drawMatch[1]);
                 const message = [];
-                const captionText = ((chatText ? chatText + '\n' : '') + (caption || '')).trim();
+                const captionText = chatText.trim();
                 if (captionText) message.push({ type: 'text', data: { text: captionText.slice(0, CFG.maxReplyChars || 2000) } });
-                message.push({ type: 'image', data: { file } });
+                let drawn = 0;
+                for (const dm of drawMatches) {
+                    if (drawn >= maxDraws) break;
+                    try {
+                        const { file } = await drawImageAny(dm[1].trim());
+                        message.push({ type: 'image', data: { file } });
+                        drawn++;
+                    } catch (e2) {
+                        log(`[${gid}] draw #${drawn + 1} failed: ${e2.message}`);
+                    }
+                }
+                if (!drawn) throw new Error('所有生成渠道都失败');
                 await sendGroupMsg(gid, message);
-                h.push({ role: 'assistant', text: (chatText || '[图片]').slice(0, 300) });
+                h.push({ role: 'assistant', text: (chatText || `[图片x${drawn}]`).slice(0, 300) });
                 while (h.length > (CFG.maxHistory || 20)) h.shift();
                 for (const m of h) m.images = undefined;
-                await forwardToLwbot(gid, chatText || '[图片]');
-                log(`[${gid}] -> [AI画图] ${drawMatch[1].slice(0, 60)}`);
+                await forwardToLwbot(gid, chatText || `[图片x${drawn}]`);
+                log(`[${gid}] -> [AI画图x${drawn}]`);
                 return;
             } catch (e) {
                 log(`[${gid}] draw error: ${e.message}（退回文本回答）`);
-                const fallback = (chatText || answer.replace(drawMatch[0], '')).trim();
+                const fallback = (chatText || answer.slice(0, drawMatches[0].index)).trim();
                 await reply(gid, fallback || '（画图失败了，稍后再试）');
                 h.push({ role: 'assistant', text: fallback.slice(0, 300) });
                 return;
