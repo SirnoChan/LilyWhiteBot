@@ -7,9 +7,14 @@
  * 行为：
  * - 只在「已启用」的群里发言；群主/管理员（config.adminQQ）在群里发
  *   「AI开启 / AI关闭 / AI重置」即可增删群与清空上下文（持久化到 state.json）
- * - 触发：@机器人 或 回复机器人的消息；其余群消息仅作为上下文记录
+ * - 触发：@机器人 或 回复机器人的消息；自动闲聊（无 @ 也搭话）默认跟随
+ *   config.triggerAll，管理员可用「AI自动开 / AI自动关」按群切换（持久化）
+ * - 跨平台：LWBot 桥接进来的其他平台发言（合成事件，假用户 pseudoUserId）
+ *   与 QQ 原生消息一样进入上下文、按同样规则触发
  * - 上下文：每群保留最近 maxHistory 条，重启即失
  * - 限额：每群 cooldownSec 秒冷却 + 全局 dailyLimit 次/天，防免费额度被打爆
+ * - 输出图片：回答里的图片直链会真正发成 QQ 图片；群友明确要画图时改调图像生成模型
+ *   （gemini.imageModel，走付费额度，失败自动退回文本回答）
  */
 
 'use strict';
@@ -22,17 +27,25 @@ const CFG = JSON.parse(fs.readFileSync(path.join(__dirname, 'config.json'), 'utf
 const STATE_FILE = path.join(__dirname, 'state.json');
 
 let enabledGroups = new Set();
+let autoReply = new Map();   // groupId -> true/false（未設置 = 跟隨 CFG.triggerAll）
 try {
-    enabledGroups = new Set(JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')).groups || []);
+    const st = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
+    enabledGroups = new Set(st.groups || []);
+    autoReply = new Map(Object.entries(st.auto || {}));
 } catch (e) { /* 首次运行无 state 文件 */
 }
 const saveState = () => {
     try {
-        fs.writeFileSync(STATE_FILE, JSON.stringify({ groups: [...enabledGroups] }, null, 1));
+        fs.writeFileSync(STATE_FILE, JSON.stringify({
+            groups: [...enabledGroups],
+            auto: Object.fromEntries(autoReply),
+        }, null, 1));
     } catch (e) {
         console.error('[group-ai] saveState failed:', e.message);
     }
 };
+// 本群是否開啟自動閒聊（無 @ 也搭話）
+const autoOn = (gid) => (autoReply.has(gid) ? !!autoReply.get(gid) : CFG.triggerAll !== false);
 
 const history = new Map();        // groupId -> [{ role: 'user'|'assistant', name?, text }]
 const recentBotMsgs = new Map();  // bot 消息 id -> 时间戳（用于识别「回复机器人」触发）
@@ -55,11 +68,8 @@ const hasAtSelf = (msg) => (Array.isArray(msg.message) ? msg.message : [])
 const repliesToBot = (msg) => (Array.isArray(msg.message) ? msg.message : [])
     .some((s) => s && s.type === 'reply' && recentBotMsgs.has(String(s.data && s.data.id)));
 
-const reply = async (gid, text) => {
-    const body = await napcatApi('/send_group_msg', {
-        group_id: Number(gid),
-        message: [{ type: 'text', data: { text: String(text).slice(0, CFG.maxReplyChars || 2000) } }],
-    });
+const sendGroupMsg = async (gid, message) => {
+    const body = await napcatApi('/send_group_msg', { group_id: Number(gid), message });
     if (body && body.data && body.data.message_id) {
         recentBotMsgs.set(String(body.data.message_id), Date.now());
         // 清理 1 小时前的记录
@@ -69,6 +79,8 @@ const reply = async (gid, text) => {
     }
     return body;
 };
+
+const reply = (gid, text) => sendGroupMsg(gid, [{ type: 'text', data: { text: String(text).slice(0, CFG.maxReplyChars || 2000) } }]);
 
 const napcatApi = async (endpoint, payload) => {
     const res = await fetch(CFG.napcatApi.replace(/\/+$/u, '') + endpoint, {
@@ -120,6 +132,22 @@ const fetchImagePart = async (url) => {
     }
 };
 
+// 下載圖片轉 base64://（給 NapCat 發圖用）；非圖片/超過 10MB/抓取失敗回 null
+const downloadImageB64 = async (url, maxBytes = 10 * 1024 * 1024) => {
+    try {
+        const res = await fetch(url, { signal: AbortSignal.timeout(20000) });
+        if (!res.ok) return null;
+        const mime = (res.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
+        const looksImage = /\.(jpe?g|png|gif|webp)(?:[?#]|$)/iu.test(url);
+        if (!mime.startsWith('image/') && !(looksImage && (mime === '' || mime === 'application/octet-stream'))) return null;
+        const buf = Buffer.from(await res.arrayBuffer());
+        if (!buf.length || buf.length > maxBytes) return null;
+        return 'base64://' + buf.toString('base64');
+    } catch (e) {
+        return null;
+    }
+};
+
 // msgs: [{ role: 'user'|'assistant'|'system', content, images? }]（OpenAI 風格）
 // 一律走 Gemini 原生端點：支持 google_search 聯網 + inline_data 圖片識別
 const geminiChat = async (msgs, images = []) => {
@@ -166,6 +194,72 @@ const geminiChat = async (msgs, images = []) => {
     return out;
 };
 
+// 圖像生成模型（Nano Banana 系，走付費額度）：返回 { caption, file }，無圖則拋錯
+const drawImage = async (prompt) => {
+    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${CFG.gemini.imageModel}:generateContent`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': CFG.gemini.apiKey },
+        body: JSON.stringify({
+            contents: [{ role: 'user', parts: [{ text: prompt }] }],
+            generationConfig: { temperature: 0.9, responseModalities: ['TEXT', 'IMAGE'] },
+        }),
+        signal: AbortSignal.timeout(120000),
+    });
+    if (!res.ok) {
+        const t = await res.text();
+        throw new Error(`image model HTTP ${res.status}: ${t.slice(0, 200)}`);
+    }
+    const data = await res.json();
+    const parts = data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts || [];
+    let caption = '';
+    let file = null;
+    for (const p of parts) {
+        if (p.text) caption += p.text;
+        const img = p.inlineData || p.inline_data;   // REST 返回 camelCase
+        if (img && img.data) file = 'base64://' + img.data;
+    }
+    if (!file) throw new Error('image model 未返回图片');
+    return { caption: caption.trim(), file };
+};
+
+// 畫圖意圖粗判：命中才改調付費生成模型；誤觸只多花一次生成，且失敗會退回文本回答
+// 分支一：動詞 + 名詞列表；分支二：「畫個lily」這類動詞+量詞+短賓語收尾的祈使句
+const DRAW_RE = /(画|畫|生成|來|来|发|發)(一|1|两|兩|几|幾)?(张|張|个|個|幅|只|匹|朵|座)?[\u4e00-\u9fffa-zA-Z0-9]{0,12}?(图|圖|画|畫|照片|头像|頭像|壁纸|壁紙|表情包|漫画|漫畫|插画|插畫|猫|貓|狗|风景|風景|海报|海報|人物|角色|小姐姐|美少女|logo|LOGO|Logo)|(画|畫|生成|来|來)(一|1|两|兩|几|幾)?(张|張|个|個|幅|只|匹|朵|座|副)[\u4e00-\u9fffa-zA-Z0-9]{1,10}$/u;
+const DRAW_NEG_RE = /(不要|别|別|不用)(画|畫|生成|P|p)|(画|畫|生成)(了|过)|(画|畫)(一)?(画|畫)|画完|畫完/u;
+
+// 發送 AI 回答：markdown 圖片與圖片直鏈真正發成 QQ 圖片；抓不到的保留為可點擊鏈接
+const sendAnswer = async (gid, answer) => {
+    const maxImgs = CFG.maxReplyImages || 3;
+    const candidates = [];
+    // markdown 圖片 → 收集並還原成裸鏈接（下載失敗時至少還能點）
+    let text = answer.replace(/!\[[^\]]*\]\((https?:\/\/[^\s)]+)\)/gu, (m, u) => {
+        candidates.push(u);
+        return u;
+    });
+    for (const m of text.matchAll(/https?:\/\/[^\s"'<>)）]+/gu)) {
+        const u = m[0].replace(/[.,;!?，。；！？]+$/u, '');
+        if (/\.(jpe?g|png|gif|webp)(?:[?#]|$)/iu.test(u) && !candidates.includes(u)) candidates.push(u);
+    }
+    const segs = [];
+    for (const u of candidates) {
+        if (segs.length >= maxImgs) break;
+        const file = await downloadImageB64(u);
+        if (!file) continue;
+        segs.push({ type: 'image', data: { file } });
+        text = text.split(u).join('');
+    }
+    if (!segs.length) {
+        await reply(gid, text);
+        return text;
+    }
+    text = text.replace(/[ \t]+\n/gu, '\n').replace(/\n{3,}/gu, '\n\n').trim();
+    const message = [];
+    if (text) message.push({ type: 'text', data: { text: text.slice(0, CFG.maxReplyChars || 2000) } });
+    message.push(...segs);
+    await sendGroupMsg(gid, message);
+    return text;
+};
+
 const pendingTimers = new Map();  // groupId -> 防抖定时器（合并连续消息）
 
 // 回應：讀取群歷史（含防抖窗口內合併的多條消息與圖片），生成一條回答
@@ -207,13 +301,35 @@ const respondNow = async (gid, explicit) => {
     images = images.slice(-(CFG.maxImages || 3));
 
     try {
+        // 畫圖分支：本輪消息明確要「畫/生成」圖時，改調圖像生成模型；失敗退回普通文本回答
+        const turn = [];
+        for (let i = h.length - 1; i >= 0 && h[i].role !== 'assistant'; i--) turn.unshift(h[i].text || '');
+        const turnText = turn.join('\n').slice(-600);
+        if (CFG.gemini.imageModel && DRAW_RE.test(turnText) && !DRAW_NEG_RE.test(turnText)) {
+            try {
+                const { caption, file } = await drawImage(turnText);
+                const message = [];
+                if (caption) message.push({ type: 'text', data: { text: caption.slice(0, CFG.maxReplyChars || 2000) } });
+                message.push({ type: 'image', data: { file } });
+                await sendGroupMsg(gid, message);
+                h.push({ role: 'assistant', text: (caption || '[图片]').slice(0, 300) });
+                while (h.length > (CFG.maxHistory || 20)) h.shift();
+                for (const m of h) m.images = undefined;
+                await forwardToLwbot(gid, caption || '[图片]');
+                log(`[${gid}] -> [AI画图] ${caption.slice(0, 60)}`);
+                return;
+            } catch (e) {
+                log(`[${gid}] draw error: ${e.message}（退回文本回答）`);
+            }
+        }
+
         const answer = await geminiChat(msgs, images);
         h.push({ role: 'assistant', text: answer.slice(0, 300) });
         while (h.length > (CFG.maxHistory || 20)) h.shift();
         // 已識別的圖片從歷史中移除，避免下次重複送模型
         for (const m of h) m.images = undefined;
-        await reply(gid, answer);
-        await forwardToLwbot(gid, answer);
+        const shown = await sendAnswer(gid, answer);
+        await forwardToLwbot(gid, shown || answer);
         log(`[${gid}] -> ${answer.slice(0, 60)}`);
     } catch (e) {
         log(`[${gid}] gemini error: ${e.message}`);
@@ -255,6 +371,18 @@ const onGroupMessage = async (ev) => {
             history.delete(gid);
             return void reply(gid, '对话上下文已重置');
         }
+        if (/^AI自动开$/u.test(text)) {
+            autoReply.set(gid, true);
+            saveState();
+            log(`auto-reply on in group ${gid}`);
+            return void reply(gid, '已开启自动闲聊：不用 @ 我也会搭话');
+        }
+        if (/^AI自动关$/u.test(text)) {
+            autoReply.set(gid, false);
+            saveState();
+            log(`auto-reply off in group ${gid}`);
+            return void reply(gid, '已关闭自动闲聊：仅 @ 或回复我时才回答');
+        }
     }
 
     if (!enabledGroups.has(gid)) return;   // 核心约束：只在指定群发言
@@ -269,7 +397,7 @@ const onGroupMessage = async (ev) => {
 
     const explicit = hasAtSelf(ev) || repliesToBot(ev);
     // 免触发模式下去重：与上一条消息完全相同的文本（重复刷屏/双发）不重复回应
-    if (!explicit && CFG.triggerAll && text && text === (lastMsgText.get(gid) || '')) {
+    if (!explicit && autoOn(gid) && text && text === (lastMsgText.get(gid) || '')) {
         return;
     }
     lastMsgText.set(gid, text || '');
@@ -284,7 +412,7 @@ const onGroupMessage = async (ev) => {
     }
 
     // 免触发模式：防抖合并——等一小段把连续多条消息凑齐后一次回应
-    if (CFG.triggerAll && (text || images.length)) {
+    if (autoOn(gid) && (text || images.length)) {
         if (pendingTimers.has(gid)) clearTimeout(pendingTimers.get(gid));
         pendingTimers.set(gid, setTimeout(() => {
             pendingTimers.delete(gid);
