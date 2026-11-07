@@ -222,11 +222,6 @@ const drawImage = async (prompt) => {
     return { caption: caption.trim(), file };
 };
 
-// 畫圖意圖粗判：命中才改調付費生成模型；誤觸只多花一次生成，且失敗會退回文本回答
-// 分支一：動詞 + 名詞列表；分支二：「畫個lily」這類動詞+量詞+短賓語收尾的祈使句
-const DRAW_RE = /(画|畫|生成|來|来|发|發)(一|1|两|兩|几|幾)?(张|張|个|個|幅|只|匹|朵|座)?[\u4e00-\u9fffa-zA-Z0-9]{0,12}?(图|圖|画|畫|照片|头像|頭像|壁纸|壁紙|表情包|漫画|漫畫|插画|插畫|猫|貓|狗|风景|風景|海报|海報|人物|角色|小姐姐|美少女|logo|LOGO|Logo)|(画|畫|生成|来|來)(一|1|两|兩|几|幾)?(张|張|个|個|幅|只|匹|朵|座|副)[\u4e00-\u9fffa-zA-Z0-9]{1,10}$/u;
-const DRAW_NEG_RE = /(不要|别|別|不用)(画|畫|生成|P|p)|(画|畫|生成)(了|过)|(画|畫)(一)?(画|畫)|画完|畫完/u;
-
 // 發送 AI 回答：markdown 圖片與圖片直鏈真正發成 QQ 圖片；抓不到的保留為可點擊鏈接
 const sendAnswer = async (gid, answer) => {
     const maxImgs = CFG.maxReplyImages || 3;
@@ -301,29 +296,35 @@ const respondNow = async (gid, explicit) => {
     images = images.slice(-(CFG.maxImages || 3));
 
     try {
-        // 畫圖分支：本輪消息明確要「畫/生成」圖時，改調圖像生成模型；失敗退回普通文本回答
-        const turn = [];
-        for (let i = h.length - 1; i >= 0 && h[i].role !== 'assistant'; i--) turn.unshift(h[i].text || '');
-        const turnText = turn.join('\n').slice(-600);
-        if (CFG.gemini.imageModel && DRAW_RE.test(turnText) && !DRAW_NEG_RE.test(turnText)) {
+        // 文字模型先處理對話：消化上下文、決定是否畫圖；
+        // 要畫圖時在回答末尾輸出 [DRAW: 提示詞]，由圖像模型接手生成
+        const answer = await geminiChat(msgs, images);
+
+        const drawMatch = answer.match(/\[DRAW:\s*([\s\S]+?)\]\s*$/u);
+        if (CFG.gemini.imageModel && drawMatch) {
+            const chatText = answer.slice(0, drawMatch.index).trim();
             try {
-                const { caption, file } = await drawImage(turnText);
+                const { caption, file } = await drawImage(drawMatch[1]);
                 const message = [];
-                if (caption) message.push({ type: 'text', data: { text: caption.slice(0, CFG.maxReplyChars || 2000) } });
+                const captionText = ((chatText ? chatText + '\n' : '') + (caption || '')).trim();
+                if (captionText) message.push({ type: 'text', data: { text: captionText.slice(0, CFG.maxReplyChars || 2000) } });
                 message.push({ type: 'image', data: { file } });
                 await sendGroupMsg(gid, message);
-                h.push({ role: 'assistant', text: (caption || '[图片]').slice(0, 300) });
+                h.push({ role: 'assistant', text: (chatText || '[图片]').slice(0, 300) });
                 while (h.length > (CFG.maxHistory || 20)) h.shift();
                 for (const m of h) m.images = undefined;
-                await forwardToLwbot(gid, caption || '[图片]');
-                log(`[${gid}] -> [AI画图] ${caption.slice(0, 60)}`);
+                await forwardToLwbot(gid, chatText || '[图片]');
+                log(`[${gid}] -> [AI画图] ${drawMatch[1].slice(0, 60)}`);
                 return;
             } catch (e) {
                 log(`[${gid}] draw error: ${e.message}（退回文本回答）`);
+                const fallback = (chatText || answer.replace(drawMatch[0], '')).trim();
+                await reply(gid, fallback || '（画图失败了，稍后再试）');
+                h.push({ role: 'assistant', text: fallback.slice(0, 300) });
+                return;
             }
         }
 
-        const answer = await geminiChat(msgs, images);
         h.push({ role: 'assistant', text: answer.slice(0, 300) });
         while (h.length > (CFG.maxHistory || 20)) h.shift();
         // 已識別的圖片從歷史中移除，避免下次重複送模型
