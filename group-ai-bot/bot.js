@@ -194,6 +194,28 @@ const geminiChat = async (msgs, images = []) => {
     return out;
 };
 
+// GLM 免费兜底：Gemini 挂掉（限流/超消费上限）时用 z.ai 免费模型继续聊天
+const fallbackChat = async (msgs) => {
+    const fb = CFG.fallbackText;
+    if (!fb || !fb.apiKey) throw new Error('无可用兜底模型');
+    const res = await fetch(`${(fb.apiBase || 'https://api.z.ai/api/paas/v4').replace(/\/+$/u, '')}/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${fb.apiKey}` },
+        body: JSON.stringify({
+            model: fb.model || 'glm-4.5-flash',
+            messages: msgs.map((m) => ({ role: m.role, content: m.content })),
+            temperature: 0.7,
+            max_tokens: 800,
+        }),
+        signal: AbortSignal.timeout(60000),
+    });
+    if (!res.ok) throw new Error(`fallback HTTP ${res.status}`);
+    const data = await res.json();
+    const out = data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content;
+    if (!out) throw new Error('fallback 返回空');
+    return String(out).trim();
+};
+
 // 圖像生成模型（Nano Banana 系，走付費額度）：返回 { caption, file }，無圖則拋錯
 const drawImage = async (prompt) => {
     const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${CFG.gemini.imageModel}:generateContent`, {
@@ -318,7 +340,14 @@ const respondNow = async (gid, explicit) => {
     try {
         // 文字模型先處理對話：消化上下文、決定是否畫圖；
         // 要畫圖時在回答末尾輸出 [DRAW: 提示詞]，由圖像模型接手生成
-        const answer = await geminiChat(msgs, images);
+        // Gemini 不可用（限流/超上限）時退到 GLM 免费模型（无搜索/画图标记会被当文字，故先剥掉）
+        let answer;
+        try {
+            answer = await geminiChat(msgs, images);
+        } catch (e) {
+            log(`gemini failed (${e.message}), using GLM fallback`);
+            answer = await fallbackChat(msgs);
+        }
 
         // 支持多张：回答里的每个 [DRAW: ...] 标记各生成一张（上限 maxDrawImages）
         const drawMatches = [...answer.matchAll(/\[DRAW:\s*([^\]]{5,600})\]/gu)];

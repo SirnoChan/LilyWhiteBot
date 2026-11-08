@@ -115,8 +115,42 @@ module.exports = (pluginManager, options) => {
                 winston.warn(`[aichat] bridge forward failed: ${e.message}`);
             }
             winston.info(`[aichat] ${context.from_uid || context.from} asked: ${q.slice(0, 40)}`);
-        }).catch((e) => {
+        }).catch(async (e) => {
             winston.warn(`[aichat] ask failed: ${e.message}`);
+            // Gemini 不可用時退到 GLM 免费兜底
+            const fb = options.fallback;
+            if (fb && fb.apiKey) {
+                try {
+                    const res = await fetch(`${(fb.apiBase || 'https://api.z.ai/api/paas/v4').replace(/\/+$/u, '')}/chat/completions`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${fb.apiKey}` },
+                        body: JSON.stringify({
+                            model: fb.model || 'glm-4.5-flash',
+                            messages: [
+                                { role: 'system', content: systemPrompt },
+                                { role: 'user', content: q.slice(0, 2000) },
+                            ],
+                            temperature: 0.7,
+                            max_tokens: 800,
+                        }),
+                        signal: AbortSignal.timeout(60000),
+                    });
+                    if (res.ok) {
+                        const d = await res.json();
+                        const out = d.choices && d.choices[0] && d.choices[0].message && d.choices[0].message.content;
+                        if (out) {
+                            const text = String(out).trim().slice(0, maxChars);
+                            context.reply(text).catch(() => {});
+                            try {
+                                bridge.send(new bridge.BridgeMsg(context, { text: '🤖 ' + text }));
+                            } catch (e2) { /* 忽略 */ }
+                            return;
+                        }
+                    }
+                } catch (e2) {
+                    winston.warn(`[aichat] fallback failed: ${e2.message}`);
+                }
+            }
             context.reply('（AI 出错了，稍后再试）').catch(() => {});
         });
     };
