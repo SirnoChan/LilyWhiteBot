@@ -34,8 +34,12 @@ try {
     autoReply = new Map(Object.entries(st.auto || {}));
 } catch (e) { /* 首次运行无 state 文件 */
 }
+// 永久启用群：每次启动与保存都强制合并，测试/清理不可能误删真实群
+const ALWAYS_GROUPS = new Set(CFG.alwaysGroups || []);
+for (const g of ALWAYS_GROUPS) enabledGroups.add(g);
 const saveState = () => {
     try {
+        for (const g of ALWAYS_GROUPS) enabledGroups.add(g);
         fs.writeFileSync(STATE_FILE, JSON.stringify({
             groups: [...enabledGroups],
             auto: Object.fromEntries(autoReply),
