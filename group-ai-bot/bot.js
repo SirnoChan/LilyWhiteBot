@@ -184,7 +184,7 @@ const geminiChat = async (msgs, images = []) => {
     }
     const body = {
         contents,
-        generationConfig: { temperature: 0.7, maxOutputTokens: 800 },
+        generationConfig: { temperature: 0.7, maxOutputTokens: 8192, thinkingConfig: { thinkingBudget: 0 } },
     };
     if (sys) body.systemInstruction = { parts: [{ text: sys.content }] };
     if (CFG.gemini.search) body.tools = [{ google_search: {} }];
@@ -220,7 +220,7 @@ const fallbackChat = async (msgs) => {
                 model: fb.model || 'glm-4.5-flash',
                 messages: msgs.map((m) => ({ role: m.role, content: m.content })),
                 temperature: 0.7,
-                max_tokens: 800,
+                max_tokens: 4000,
             }),
             signal: AbortSignal.timeout(90000),
         });
@@ -239,9 +239,16 @@ const fallbackChat = async (msgs) => {
 };
 
 // 圖像生成模型（Nano Banana 系，走付費額度）：返回 { caption, file }，無圖則拋錯
-const drawImage = async (prompt) => {
+// refUrls: 參考圖 URL（圖生圖/改圖模式，圖片作 inline_data 與指令一併送入）
+const drawImage = async (prompt, refUrls = []) => {
+    const parts = [];
+    for (const u of refUrls.slice(0, 3)) {
+        const part = await fetchImagePart(u);
+        if (part) parts.push(part);
+    }
+    parts.push({ text: prompt });
     const body = {
-        contents: [{ role: 'user', parts: [{ text: prompt }] }],
+        contents: [{ role: 'user', parts }],
         generationConfig: { temperature: 0.9, responseModalities: ['TEXT', 'IMAGE'] },
     };
     if (CFG.gemini.safetyOff) body.safetySettings = GEMINI_SAFETY_OFF;
@@ -256,10 +263,10 @@ const drawImage = async (prompt) => {
         throw new Error(`image model HTTP ${res.status}: ${t.slice(0, 200)}`);
     }
     const data = await res.json();
-    const parts = data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts || [];
+    const outParts = data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts || [];
     let caption = '';
     let file = null;
-    for (const p of parts) {
+    for (const p of outParts) {
         if (p.text) caption += p.text;
         const img = p.inlineData || p.inline_data;   // REST 返回 camelCase
         if (img && img.data) file = 'base64://' + img.data;
@@ -279,9 +286,9 @@ const drawImageFallback = async (prompt) => {
     return { caption: '', file: 'base64://' + buf.toString('base64') };
 };
 
-const drawImageAny = async (prompt) => {
+const drawImageAny = async (prompt, refUrls = []) => {
     try {
-        return await drawImage(prompt);
+        return await drawImage(prompt, refUrls);
     } catch (e) {
         log(`draw: gemini image failed (${e.message}), falling back to pollinations`);
         return await drawImageFallback(prompt);
@@ -386,7 +393,7 @@ const respondNow = async (gid, explicit) => {
                 for (const dm of drawMatches) {
                     if (drawn >= maxDraws) break;
                     try {
-                        const { file } = await drawImageAny(dm[1].trim());
+                        const { file } = await drawImageAny(dm[1].trim(), images);
                         message.push({ type: 'image', data: { file } });
                         drawn++;
                     } catch (e2) {
@@ -416,7 +423,7 @@ const respondNow = async (gid, explicit) => {
         for (const m of h) m.images = undefined;
         const shown = await sendAnswer(gid, answer);
         await forwardToLwbot(gid, shown || answer);
-        log(`[${gid}] -> ${answer.slice(0, 60)}`);
+        log(`[${gid}] -> (${answer.length}字) ${answer.slice(0, 160)}`);
     } catch (e) {
         log(`[${gid}] gemini error: ${e.message}`);
         await reply(gid, '（AI 出错了，稍后再试）').catch(() => {});
