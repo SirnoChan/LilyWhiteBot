@@ -417,6 +417,45 @@ const respondNow = async (gid, explicit) => {
             }
         }
 
+        // 文字模型用言语拒绝画图意图时（未输出 DRAW 标记）→ 直接走兜底渠道生成，
+        // 不让言语层的拒绝挡住真正的出图
+        const DRAW_INTENT_RE = /(画|畫|生成)(一|1|两|兩|几|幾)?(张|張|个|個|幅|张)?|改成|重绘|重繪|p成|P成|变成图|變成圖/u;
+        const REFUSAL_RE = /(不能|无法|無法|做不到|拒绝|拒絕|不可以|不适合|不適合|违反|違反|无法生成).{0,20}(画|畫|生成|图|圖|图片|圖片|内容|內容)|(画|畫|生成|图|圖).{0,12}(不能|无法|無法|做不到)/u;
+        const lastUserMsg = [...h].reverse().find((m) => m.role === 'user');
+        const lastUserText = lastUserMsg ? (lastUserMsg.text || '') : '';
+        const hadImages = lastUserMsg && Array.isArray(lastUserMsg.images) && lastUserMsg.images.length;
+        if (CFG.gemini.imageModel && !drawMatches.length
+            && DRAW_INTENT_RE.test(lastUserText) && REFUSAL_RE.test(answer)) {
+            log(`[${gid}] draw intent refused by text model, direct fallback generation`);
+            const message = [];
+            let drawn = 0;
+            try {
+                // 先让 GLM 把中文需求翻成英文提示词（flux 对英文更稳），失败就用原话
+                let promptEn = lastUserText;
+                try {
+                    promptEn = await fallbackChat([
+                        { role: 'system', content: '把用户的话翻译成一段英文图像生成提示词（prompt），只描述画面本身，输出提示词原文，不要解释。' },
+                        { role: 'user', content: lastUserText },
+                    ]);
+                } catch (e2) { /* 翻译失败用原话 */ }
+                const { file } = await drawImageAny(promptEn, hadImages ? images : []);
+                message.push({ type: 'image', data: { file } });
+                drawn++;
+            } catch (e2) {
+                log(`[${gid}] direct fallback draw failed: ${e2.message}`);
+            }
+            if (drawn) {
+                await sendGroupMsg(gid, message);
+                h.push({ role: 'assistant', text: '[图片]' });
+                while (h.length > (CFG.maxHistory || 20)) h.shift();
+                for (const m of h) m.images = undefined;
+                await forwardToLwbot(gid, '[图片]');
+                log(`[${gid}] -> [兜底画图]`);
+                return;
+            }
+            // 兜底也失败：照常发送文字回答（拒绝说明），落到下方常规路径
+        }
+
         h.push({ role: 'assistant', text: answer.slice(0, 300) });
         while (h.length > (CFG.maxHistory || 20)) h.shift();
         // 已識別的圖片從歷史中移除，避免下次重複送模型
