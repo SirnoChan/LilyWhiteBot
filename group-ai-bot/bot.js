@@ -118,6 +118,15 @@ const forwardToLwbot = async (gid, text) => {
     }
 };
 
+// 破甲：全类别安全过滤关闭（官方 API 阈值开关，需 key 支持 OFF 档）
+const GEMINI_SAFETY_OFF = [
+    { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'OFF' },
+    { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'OFF' },
+    { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'OFF' },
+    { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'OFF' },
+    { category: 'HARM_CATEGORY_CIVIC_INTEGRITY', threshold: 'OFF' },
+];
+
 // 下載圖片並轉成 Gemini inline_data（>4MB 或抓取失敗則跳過）
 const fetchImagePart = async (url) => {
     try {
@@ -175,6 +184,7 @@ const geminiChat = async (msgs, images = []) => {
     };
     if (sys) body.systemInstruction = { parts: [{ text: sys.content }] };
     if (CFG.gemini.search) body.tools = [{ google_search: {} }];
+    if (CFG.gemini.safetyOff) body.safetySettings = GEMINI_SAFETY_OFF;
     const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${CFG.gemini.model}:generateContent`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-goog-api-key': CFG.gemini.apiKey },
@@ -198,33 +208,43 @@ const geminiChat = async (msgs, images = []) => {
 const fallbackChat = async (msgs) => {
     const fb = CFG.fallbackText;
     if (!fb || !fb.apiKey) throw new Error('无可用兜底模型');
-    const res = await fetch(`${(fb.apiBase || 'https://api.z.ai/api/paas/v4').replace(/\/+$/u, '')}/chat/completions`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${fb.apiKey}` },
-        body: JSON.stringify({
-            model: fb.model || 'glm-4.5-flash',
-            messages: msgs.map((m) => ({ role: m.role, content: m.content })),
-            temperature: 0.7,
-            max_tokens: 800,
-        }),
-        signal: AbortSignal.timeout(60000),
-    });
-    if (!res.ok) throw new Error(`fallback HTTP ${res.status}`);
-    const data = await res.json();
-    const out = data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content;
-    if (!out) throw new Error('fallback 返回空');
-    return String(out).trim();
+    const call = async () => {
+        const res = await fetch(`${(fb.apiBase || 'https://api.z.ai/api/paas/v4').replace(/\/+$/u, '')}/chat/completions`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${fb.apiKey}` },
+            body: JSON.stringify({
+                model: fb.model || 'glm-4.5-flash',
+                messages: msgs.map((m) => ({ role: m.role, content: m.content })),
+                temperature: 0.7,
+                max_tokens: 800,
+            }),
+            signal: AbortSignal.timeout(90000),
+        });
+        if (!res.ok) throw new Error(`fallback HTTP ${res.status}`);
+        const data = await res.json();
+        const out = data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content;
+        if (!out) throw new Error('fallback 返回空');
+        return String(out).trim();
+    };
+    try {
+        return await call();
+    } catch (e) {
+        await new Promise((r) => setTimeout(r, 3000));   // 偶发慢响应重试一次
+        return await call();
+    }
 };
 
 // 圖像生成模型（Nano Banana 系，走付費額度）：返回 { caption, file }，無圖則拋錯
 const drawImage = async (prompt) => {
+    const body = {
+        contents: [{ role: 'user', parts: [{ text: prompt }] }],
+        generationConfig: { temperature: 0.9, responseModalities: ['TEXT', 'IMAGE'] },
+    };
+    if (CFG.gemini.safetyOff) body.safetySettings = GEMINI_SAFETY_OFF;
     const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${CFG.gemini.imageModel}:generateContent`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-goog-api-key': CFG.gemini.apiKey },
-        body: JSON.stringify({
-            contents: [{ role: 'user', parts: [{ text: prompt }] }],
-            generationConfig: { temperature: 0.9, responseModalities: ['TEXT', 'IMAGE'] },
-        }),
+        body: JSON.stringify(body),
         signal: AbortSignal.timeout(120000),
     });
     if (!res.ok) {
