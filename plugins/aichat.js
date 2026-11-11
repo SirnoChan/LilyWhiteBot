@@ -50,6 +50,12 @@ module.exports = (pluginManager, options) => {
     const triggerAll = options.triggerAll !== false;
     const debounceMs = options.debounceMs || 6000;
     const cooldownMs = (options.cooldownSec || 30) * 1000;
+    // 话题密度动态间隔：群越吵，回应间隔越长、防抖越久
+    const cooldownMinMs = (options.cooldownSecMin || 15) * 1000;
+    const cooldownMaxMs = (options.cooldownSecMax || 240) * 1000;
+    const debounceMinMs = options.debounceMinMs || 4000;
+    const debounceMaxMs = options.debounceMaxMs || 15000;
+    const msgTimes = new Map();   // chatKey -> 最近消息时间戳（算话题密度用）
     const dailyLimit = options.dailyLimit || 200;
     const maxHistory = options.maxHistory || 20;
     const maxReplyChars = options.maxReplyChars || 2000;
@@ -82,6 +88,15 @@ module.exports = (pluginManager, options) => {
     const lastMsgText = new Map();
     const daily = { date: '', n: 0 };
 
+    // 话题密度（0-1）：按最近 60 秒内的消息条数归一（25 条/分钟封顶）
+    const densityOf = (chatKey) => {
+        const times = msgTimes.get(chatKey) || [];
+        const now = Date.now();
+        const recent = times.filter((t) => now - t < 60 * 1000).length;
+        return Math.min(1, recent / 25);
+    };
+    const lerp = (a, b, t) => Math.round(a + (b - a) * t);
+
     const enabledFile = path.join(tmpDir, 'aichat-enabled.json');
     const enabledChat = new Set();
     try {
@@ -112,11 +127,19 @@ const safeReply = (msg, text) => {
     // ---------------- Gemini 调用 ----------------
     const fetchImagePart = async (url) => {
         try {
-            const res = await fetch(url, { signal: AbortSignal.timeout(15000) });
+            const res = await fetch(url, { signal: AbortSignal.timeout(30000) });
             if (!res.ok) return null;
-            const buf = Buffer.from(await res.arrayBuffer());
-            if (!buf.length || buf.length > 4 * 1024 * 1024) return null;
-            const mime = (res.headers.get('content-type') || 'image/jpeg').split(';')[0];
+            let buf = Buffer.from(await res.arrayBuffer());
+            if (!buf.length) return null;
+            let mime = (res.headers.get('content-type') || 'image/jpeg').split(';')[0];
+            // 超过 3.5MB（群友长截图常见）→ sharp 缩到 1600px JPEG，保证能送进 Gemini
+            if (buf.length > 3.5 * 1024 * 1024) {
+                try {
+                    buf = await require('sharp')(buf).rotate().resize({ width: 1600, height: 1600, fit: 'inside', withoutEnlargement: true }).jpeg({ quality: 82 }).toBuffer();
+                    mime = 'image/jpeg';
+                } catch (e) { /* 缩图失败继续尝试原图 */ }
+            }
+            if (buf.length > 6 * 1024 * 1024) return null;
             return { inline_data: { mime_type: mime, data: buf.toString('base64') } };
         } catch (e) {
             return null;
@@ -318,9 +341,10 @@ const safeReply = (msg, text) => {
             return void (explicit ? safeReply(msg, '（今天的额度用完了，明天再来吧）') : undefined);
         }
         const now = Date.now();
-        if (now - (lastReplyAt.get(chatKey) || 0) < cooldownMs) return;
+        const density = densityOf(chatKey);
+        const effCooldown = Math.round(cooldownMs + (cooldownMaxMs - cooldownMs) * density);
+        if (now - (lastReplyAt.get(chatKey) || 0) < Math.max(cooldownMinMs, effCooldown - cooldownMinMs)) return;
         lastReplyAt.set(chatKey, now);
-        daily.n++;
 
         const msgs = [{ role: 'system', content: systemPrompt }];
         for (const m of h.slice(-maxHistory)) {
@@ -343,6 +367,13 @@ const safeReply = (msg, text) => {
             } catch (e) {
                 log(`gemini failed (${e.message}), using GLM fallback`);
                 answer = await fallbackChat(msgs);
+            }
+            daily.n++;
+            // 沉默協議：模型判斷不值得回應時只輸出 [SKIP]，保持安靜且不佔回應節奏
+            if (/^\[SKIP\]\s*$/u.test(answer.trim())) {
+                lastReplyAt.delete(chatKey);      // 不佔冷卻，下一條消息正常評估
+                log(`[${chatKey}] -> [SKIP]（保持沉默）`);
+                return;
             }
 
             // 画图：解析 [DRAW: ...] 标记（支持多张）
@@ -431,6 +462,12 @@ const safeReply = (msg, text) => {
                 .map((f) => f.url)
                 .filter((u) => u && /^https?:\/\//u.test(u));
 
+            // 话题密度采样
+            if (!msgTimes.has(chatKey)) msgTimes.set(chatKey, []);
+            const times = msgTimes.get(chatKey);
+            times.push(Date.now());
+            while (times.length > 60) times.shift();
+
             // 群历史
             const h = history.get(chatKey) || [];
             if (text || images.length) {
@@ -466,12 +503,16 @@ const safeReply = (msg, text) => {
                 return Promise.resolve();
             }
 
-            if (triggerAll && (text || images.length)) {
+            const commandLike = /^[!/#]/u.test(text);
+            const tooShort = !explicit && text.length < 3 && !images.length;
+            if (triggerAll && (text || images.length) && !commandLike && !tooShort) {
                 if (pendingTimers.has(chatKey)) clearTimeout(pendingTimers.get(chatKey));
+                const density = densityOf(chatKey);
+                const effDebounce = lerp(debounceMinMs, debounceMaxMs, density);
                 pendingTimers.set(chatKey, setTimeout(() => {
                     pendingTimers.delete(chatKey);
                     respondNow(msg, false).catch((e) => log(`respond error: ${e.message}`));
-                }, debounceMs));
+                }, effDebounce));
             }
         } catch (e) {
             winston.warn(`[aichat] intake error: ${e.message}`);
