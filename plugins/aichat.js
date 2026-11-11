@@ -273,22 +273,30 @@ const safeReply = (msg, text) => {
         return f;
     };
 
-    // 回答只發送給源平台（文字 + 圖片直鏈），不做跨平台廣播；
-    // AI 自身的發言僅作為上下文記錄（不觸發、不外傳）
+    // 回答發送到源平台（文字+圖片直鏈），圖片同時經 file.js 橋接為其餘平台的真圖片
     const sendChatReply = async (msg, text, tmpImages) => {
-        let fullText = text;
+        await safeReply(msg, text);
         if (tmpImages && tmpImages.length) {
-            const urls = [];
-            for (const im of tmpImages) {
-                try {
-                    const url = await s3Upload(fs.readFileSync(im.path), path.extname(im.path) || '.png');
-                    if (url) urls.push(url);
-                } catch (e) { /* 上傳失敗跳過 */ }
-                fs.unlink(im.path, () => {});
+            try {
+                const files = [];
+                const urls = [];
+                for (const im of tmpImages) {
+                    try {
+                        const url = await s3Upload(fs.readFileSync(im.path), path.extname(im.path) || '.png');
+                        if (url) urls.push(url);
+                    } catch (e) { /* 上傳失敗仍走 files 橋接 */ }
+                    files.push({ client: msg.handler ? msg.handler.type : 'QQ', type: 'image', path: im.path, name: path.basename(im.path) });
+                }
+                bridge.send(new bridge.BridgeMsg(msg, {
+                    nick: 'Lily',
+                    text: (text ? '🖼 ' : '') + urls.join(' '),
+                    extra: { files },
+                }));
+                for (const im of tmpImages) fs.unlink(im.path, () => {});
+            } catch (e) {
+                winston.warn(`[aichat] image bridge failed: ${e.message}`);
             }
-            if (urls.length) fullText = (fullText ? fullText + '\n' : '') + urls.join('\n');
         }
-        await safeReply(msg, fullText);
     };
 
     // ---------------- 回應核心 ----------------
@@ -372,6 +380,9 @@ const safeReply = (msg, text) => {
             while (h.length > maxHistory) h.shift();
             for (const m of h) m.images = undefined;
             await safeReply(msg, answer.slice(0, maxReplyChars));
+            try {
+                bridge.send(new bridge.BridgeMsg(msg, { text: '🤖 ' + answer.slice(0, maxReplyChars), nick: 'Lily' }));
+            } catch (e) { /* 橋接失敗忽略 */ }
             log(`[${chatKey}] -> (${answer.length}字) ${answer.slice(0, 160)}`);
         } catch (e) {
             log(`respond error: ${e.message}`);
@@ -380,56 +391,10 @@ const safeReply = (msg, text) => {
     };
 
     // ---------------- intake（bridge.send 钩子，每条源消息进一次） ----------------
-    // NapCat 反查：無 URL 的圖片用 get_image 補、回復目標消息裡的圖片用 get_msg 撈
-    const napcatGet = async (handler, action, params) => {
-        if (!handler || !handler._apiRoot) return null;
-        try {
-            const res = await fetch(`${handler._apiRoot.replace(/\/+$/u, '')}/${action}`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(params),
-                signal: AbortSignal.timeout(15000),
-            });
-            const d = await res.json();
-            return (d && d.status === 'ok' && d.data) || null;
-        } catch (e) {
-            return null;
-        }
-    };
-
-    const collectImages = async (msg) => {
-        const images = [];
-        for (const f of (msg.extra.files || [])) {
-            if (f.url && /^https?:\/\//u.test(f.url)) {
-                images.push(f.url);
-                continue;
-            }
-            // QQ 圖片缺 URL：經 NapCat get_image 反查
-            if (msg.handler && msg.handler._apiRoot && f.id && f.type === 'image') {
-                const d = await napcatGet(msg.handler, 'get_image', { file: f.id });
-                if (d && d.url && /^https?:\/\//u.test(d.url)) images.push(d.url);
-            }
-        }
-        // 回復目標消息裡有圖（回圖問圖的常見用法）：用 get_msg 撈原圖
-        const r = msg.extra.reply;
-        if (!images.length && r && r._id !== undefined && msg.handler && msg.handler._apiRoot) {
-            const d = await napcatGet(msg.handler, 'get_msg', { message_id: r._id });
-            const segs = d && d.message;
-            if (Array.isArray(segs)) {
-                for (const sg of segs) {
-                    if (sg && sg.type === 'image' && sg.data && sg.data.url && /^https?:\/\//u.test(sg.data.url)) {
-                        images.push(sg.data.url);
-                    }
-                }
-            }
-        }
-        return images;
-    };
-
-    const intake = async (msg) => {
+    const intake = (msg) => {
         try {
             const chatKey = msg.to_uid;
-            if (!chatKey) return;
+            if (!chatKey) return Promise.resolve();
 
             const enabled = alwaysGroups.has(chatKey) || enabledChat.has(chatKey);
             const text = String(msg.text || '').trim();
@@ -459,10 +424,12 @@ const safeReply = (msg, text) => {
                 }
             }
 
-            if (!enabled) return;
+            if (!enabled) return Promise.resolve();
 
-            // 收集图片 URL（有直链用直链；QQ 缺 URL 经 get_image 反查；回复图片经 get_msg 撈）
-            const images = await collectImages(msg);
+            // 收集图片 URL（各平台处理器已把图片放入 extra.files 并带 url）
+            const images = (msg.extra.files || [])
+                .map((f) => f.url)
+                .filter((u) => u && /^https?:\/\//u.test(u));
 
             // 群历史
             const h = history.get(chatKey) || [];
@@ -528,6 +495,9 @@ const safeReply = (msg, text) => {
         geminiChat(msgs).catch(() => fallbackChat(msgs)).then((answer) => {
             const text = String(answer).slice(0, maxChars);
             context.reply(text).catch(() => {});
+            try {
+                bridge.send(new bridge.BridgeMsg(context, { text: '🤖 ' + text }));
+            } catch (e) { /* 忽略 */ }
         }).catch((e) => {
             winston.warn(`[aichat] quick ask failed: ${e.message}`);
             context.reply('（AI 出错了，稍后再试）').catch(() => {});
