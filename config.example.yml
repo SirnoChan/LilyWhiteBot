@@ -179,6 +179,24 @@ ai:
   apiKey: ""                              # API Key，留空則停用 AI 摘要
   model: "gpt-4o-mini"                    # 模型名
 
+# AI 聊天（aichat 插件）：Lily 人设群聊 AI，跨平台（QQ/TG/Discord/Matrix/IRC 互联群）。
+# 管理命令：AI开启 / AI关闭 / AI重置（仅 adminIds）；快捷命令 !ai 问题（单轮问答）。
+# 完整人设 systemPrompt 与画图/兜底配置见生产 config.yml，此处仅列关键开关。
+aichat:
+  # apiBase / apiKey / model / imageModel / search / safetyOff / fallback{...} / systemPrompt
+  # alwaysGroups: ["qq/942574893"]          # 永久启用群（uid 格式，重启不丢）
+  # adminIds: ["qq/1832396853"]             # 可用管理命令的用户（uid 格式）
+  # botNickTriggers: ["莉莉", "@Lily"]      # 文本命中即视为被@
+  #
+  # 回复预设（replyMode 三档，手动切换）：
+  #   auto    = 默认。被@/回复必须回应（无视冷却、禁止 [SKIP] 沉默），其余消息按话题密度自适应回应
+  #   all     = 群里每条消息都回应，排队按固定间隔逐条发送（命令除外）
+  #   mention = 只回应被@/被回复的消息，其余一律沉默（历史仍记录作上下文）
+  replyMode: auto
+  replyAllIntervalSec: 30                   # all 模式逐条回应的发送间隔（秒）
+  # replyAllQueueMax: 10                    # all 模式队列上限，超出丢弃最旧一条
+  # triggerAll: true                        # 旧开关：兼容保留，replyMode 未显式配置时 false 等效 mention
+
 # Jina Reader 回退的反爬配置（telegraph 插件抓取被反爬的站點如知乎時使用）。
 # 匿名請求對部分站點會 403；在 https://jina.ai 免費註冊獲取 API Key（免費額度 1M token/月）
 # 後填入 jinaApiKey 可大幅提高抓取成功率。
