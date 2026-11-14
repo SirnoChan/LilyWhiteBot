@@ -500,9 +500,10 @@ const safeReply = (msg, text) => {
         return f;
     };
 
-    // 回答發送到源平台（文字+圖片直鏈），圖片同時經 file.js 橋接為其餘平台的真圖片
+    // 回答發送到源平台（文字+圖片直鏈），圖片同時經 file.js 橋接為其餘平台的真圖片。
+    // 源平台也帶 🤖 前綴（與其他平台廣播樣式一致，標識這是 AI 發言）
     const sendChatReply = async (msg, text, tmpImages) => {
-        await safeReply(msg, text);
+        await safeReply(msg, text ? '🤖 ' + text : text);
         if (tmpImages && tmpImages.length) {
             try {
                 const files = [];
@@ -687,7 +688,7 @@ const safeReply = (msg, text) => {
                     log(`[${chatKey}] -> [语音] (${ttsModel}/${ttsVoice})`);
                 } catch (e2) {
                     log(`TTS failed (${e2.message})，退回文字回复`);
-                    await safeReply(msg, answer.slice(0, maxReplyChars));
+                    await safeReply(msg, '🤖 ' + answer.slice(0, maxReplyChars));
                     try {
                         const bm = new bridge.BridgeMsg(msg, { text: '🤖 ' + answer.slice(0, maxReplyChars), nick: 'Lily' });
                         bm._pluginSource = 'aichat';
@@ -697,7 +698,7 @@ const safeReply = (msg, text) => {
                 return;
             }
 
-            await safeReply(msg, answer.slice(0, maxReplyChars));
+            await safeReply(msg, '🤖 ' + answer.slice(0, maxReplyChars));
             try {
                 const bm = new bridge.BridgeMsg(msg, { text: '🤖 ' + answer.slice(0, maxReplyChars), nick: 'Lily' });
                 bm._pluginSource = 'aichat';   // 插件来源标记：消息记录归属 + intake 跳过自己的广播回流
@@ -928,7 +929,7 @@ const safeReply = (msg, text) => {
         const msgs = [{ role: 'system', content: systemPrompt }, { role: 'user', content: q.slice(0, 2000) }];
         geminiChat(msgs).catch(() => fallbackChat(msgs)).then((answer) => {
             const text = String(answer).slice(0, maxChars);
-            context.reply(text).catch(() => {});
+            context.reply('🤖 ' + text).catch(() => {});
             try {
                 const bm = new bridge.BridgeMsg(context, { text: '🤖 ' + text });
                 bm._pluginSource = 'aichat';
