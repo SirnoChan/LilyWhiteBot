@@ -386,7 +386,9 @@ const safeReply = (msg, text) => {
     const ttsModel = ttsOpt.model || 'gemini-3.8-flash-tts';
     const ttsVoice = ttsOpt.voice || 'Leda';          // 女声；可用 Kore/Puck/Aoede 等
     const ttsMaxChars = ttsOpt.maxChars || 600;
-    const TTS_STYLE = '哈尔滨东北口音、奶声奶气、像小学生说话的幼女声线，音调偏高、咬字软糯、语速轻快，语气天真烂漫爱撒娇；从头到尾全程保持幼态童声，绝对不要回退到成年女性或标准播音腔';   // 口音/声线由提示词控制；预置音色见 tts.voice
+    const TTS_STYLE = '哈尔滨东北口音，奶声奶气，像小学生说话，幼女声线，音调偏高，咬字软糯，语速轻快，天真烂漫，全程幼态童声';   // 只用描述词，禁令句会被模型整句念出来；口音/声线由提示词控制，预置音色见 tts.voice
+    // prompt 泄漏检测词（style 描述词出现在语音转录里 = 泄漏；不用"小学生/撒娇/不要"等正文可能出现的词，避免误判）
+    const TTS_LEAK = /(声线|口音|播音腔|咬字|音调偏高|奶声奶气|幼女|童声)/u;
 
     // PCM(16bit 单相) 包上 WAV 头，各平台语音接口都能吃
     const pcmToWav = (pcm, rate) => {
@@ -398,18 +400,8 @@ const safeReply = (msg, text) => {
         return Buffer.concat([hdr, pcm]);
     };
 
-    // 文本转语音，返回临时 wav 文件路径；文本先去 Markdown 符号（否则会被念出来）。
-    // 指令必须包 <voice_style> 标签、正文包 <speech>——实测「……说：」前缀和换行分隔都会被模型整句念出来，
-    // systemInstruction 被 TTS 模型 400 拒绝（Developer instruction is not enabled）
-    const geminiSpeak = async (rawText) => {
-        const sayText = String(rawText)
-            .replace(/\[DRAW:[^\]]*\]/gu, '')
-            .replace(/[*`#>]+/gu, '')
-            .replace(/https?:\/\/\S+/gu, '')
-            .trim()
-            .slice(0, ttsMaxChars);
-        if (!sayText) throw new Error('TTS 文本为空');
-        const text = `<voice_style>${TTS_STYLE}</voice_style>\n<speech>${sayText}</speech>`;
+    // TTS 调用，返回 wav Buffer
+    const ttsCall = async (text) => {
         const body = {
             contents: [{ role: 'user', parts: [{ text }] }],
             generationConfig: {
@@ -434,9 +426,56 @@ const safeReply = (msg, text) => {
         if (!part) throw new Error('TTS 未返回音频');
         const mime = String(part.inlineData.mimeType || 'audio/L16;rate=24000');
         const rate = parseInt((mime.match(/rate=(\d+)/) || [0, '24000'])[1], 10) || 24000;
-        const wav = pcmToWav(Buffer.from(part.inlineData.data, 'base64'), rate);
+        return pcmToWav(Buffer.from(part.inlineData.data, 'base64'), rate);
+    };
+
+    // 语音听写（用聊天模型验证 TTS 是否把 prompt 念出来了）
+    const transcribeWav = async (wavBuf) => {
+        const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
+            body: JSON.stringify({
+                contents: [{ role: 'user', parts: [
+                    { text: '逐字转录这段语音的全部内容，只输出转录文本。' },
+                    { inline_data: { mime_type: 'audio/wav', data: wavBuf.toString('base64') } },
+                ] }],
+                generationConfig: { temperature: 0, maxOutputTokens: 1000, thinkingConfig: { thinkingBudget: 0 } },
+            }),
+            signal: AbortSignal.timeout(120000),
+        });
+        if (!res.ok) throw new Error(`STT HTTP ${res.status}`);
+        const data = await res.json();
+        return (data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts || [])
+            .map((p) => p.text || '').join('').trim();
+    };
+
+    // 文本转语音，返回临时 wav 文件路径；文本先去 Markdown 符号（否则会被念出来）。
+    // 指令必须包 <voice_style> 标签、正文包 <speech>——「……说：」前缀和换行分隔都会被念出来，
+    // systemInstruction 被 TTS 模型 400 拒绝。泄漏是随机的（同输入偶发整段念 prompt），故生成后
+    // 自动转录验证，泄漏重试（最多 3 次），仍泄漏则抛错退回文字回复——带 prompt 的语音绝不发群。
+    const geminiSpeak = async (rawText) => {
+        const sayText = String(rawText)
+            .replace(/\[DRAW:[^\]]*\]/gu, '')
+            .replace(/[*`#>]+/gu, '')
+            .replace(/https?:\/\/\S+/gu, '')
+            .trim()
+            .slice(0, ttsMaxChars);
+        if (!sayText) throw new Error('TTS 文本为空');
+        const text = `<voice_style>${TTS_STYLE}</voice_style>\n<speech>${sayText}</speech>`;
+        let wavBuf = null;
+        for (let attempt = 1; attempt <= 3; attempt++) {
+            wavBuf = await ttsCall(text);
+            const tr = await transcribeWav(wavBuf).then((t) => String(t || ''), () => null);
+            if (tr === null) {   // 验证链路故障：不因验证禁声，照发
+                log('TTS leak check unavailable, sending unverified');
+                break;
+            }
+            if (tr.length >= 2 && !TTS_LEAK.test(tr)) break;   // 干净
+            log(`TTS prompt 泄漏（第 ${attempt} 次）：${tr.slice(0, 50)}`);
+            if (attempt === 3) throw new Error(`TTS prompt leak persisted: ${tr.slice(0, 40)}`);
+        }
         const wavPath = path.join(tmpDir, 'aichat-tts-' + Date.now() + '-' + Math.floor(Math.random() * 1e6) + '.wav');
-        fs.writeFileSync(wavPath, wav);
+        fs.writeFileSync(wavPath, wavBuf);
         return wavPath;
     };
 
