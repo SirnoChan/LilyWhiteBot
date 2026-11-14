@@ -217,7 +217,10 @@ const receive = async (msg) => {
     }
 
     let template;
-    if (msg.isNotice) {
+    if (msg._pluginSource) {
+        // 插件自發消息（bot 自己帳號在目標平台發出，如 aichat 的回覆/語音）：不加互聯歸屬前綴
+        template = '{text}';
+    } else if (msg.isNotice) {
         template = messageStyle[styleMode].notice;
     } else if (msg.extra.isAction) {
         template = messageStyle[styleMode].action;
