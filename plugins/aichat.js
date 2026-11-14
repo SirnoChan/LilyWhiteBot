@@ -4,10 +4,13 @@
  * 能力（跨所有互联平台）：
  * - 三档回复预设（config.yml aichat.replyMode 手动切换）：
  *     auto    = 默认。被@/回复必须回应（禁止 [SKIP] 沉默）；其余消息先由便宜评审模型判断
- *               是否值得回应（通过才调主模型生成；带图片消息跳过评审），评审的决定即最终决策
+ *               是否值得回应（输出 SKIP / REPLY / REPLY n，n=按语义回溯的上下文条数，
+ *               主模型按 n 取历史；通过才调主模型生成；带图片消息跳过评审），评审的决定即最终决策
  *     all     = 群里每条消息都回应（排队逐条发送，间隔 replyAllIntervalSec，默认 30 秒）
  *     mention = 只回应被@/被回复的消息，其余保持沉默（历史照常记录作上下文）
  * - 上下文持久化：互联群组消息记录在 SQLite message_log（含插件来源列），重启后自动恢复群聊上下文
+ * - 跨平台上下文：互联群共享同一段对话历史（桥接副本并入目标群上下文与数据库镜像行），
+ *   任一平台的 AI 都能看到其他平台群友的发言；回应判定仍只在消息源平台，避免双回复
  * - @/回复触发：@机器人昵称、回复机器人桥接消息 → 立即回答
  * - 看图：消息里的图片以 inline_data 送 Gemini 视觉
  * - 画图：文字模型输出 [DRAW:提示词] → Nano Banana 生成（支持图生图：参考图一并送入），
@@ -280,17 +283,24 @@ const safeReply = (msg, text) => {
     };
 
     // ---------------- 回应评审（auto 模式，便宜模型先判断是否值得回应） ----------------
-    const JUDGE_PROMPT = '你是群聊 AI「Lily」的回应评审。根据最近群聊记录，判断 Lily 是否应该回应最新一条消息。\n' +
-        '值得回应（REPLY）：有具体内容可聊、有人提问或求助、有人提到或问候 Lily、能接上的趣事。\n' +
+    // 评审窗口比主模型默认上下文更大，以便按语义回溯需要多少条历史（REPLY 数字）
+    const judgeHistory = options.judgeHistory || 40;
+    const JUDGE_PROMPT = '你是群聊 AI「Lily」的回应评审。根据最近群聊记录（可能包含跨平台互联群友的发言），判断 Lily 是否应该回应最新一条消息。\n' +
+        '值得回应（REPLY）：有具体内容可聊、有人提问或求助、有人提到或问候 Lily、接得上话的趣事。\n' +
         '不值得回应（SKIP）：纯表情或灌水、无信息量的单字、明显不是说给 Lily 听、没有可回应的内容。\n' +
-        '平时宁可不说话，不确定时倾向 SKIP。只输出 REPLY 或 SKIP 一个词，不要输出其他内容。\n\n最近群聊记录：\n';
+        '平时宁可不说话，不确定时倾向 SKIP。\n' +
+        '输出格式（三选一）：\n' +
+        'SKIP\n' +
+        'REPLY\n' +
+        'REPLY 数字 —— 该消息需要回溯更早的对话才能回应时，数字 = 相关上下文需要的最近消息条数（如 REPLY 35）\n' +
+        '不要输出其他内容。\n\n最近群聊记录：\n';
     const judgeChat = async (chatKey) => {
-        if (!judgeCfg.apiKey) return 'REPLY';   // 未配置评审模型 → 退回主模型自判
-        const h = (history.get(chatKey) || []).slice(-12);
+        if (!judgeCfg.apiKey) return { verdict: 'REPLY', context: 0 };   // 未配置评审模型 → 退回主模型自判
+        const h = (history.get(chatKey) || []).slice(-judgeHistory);
         const lines = h.map((m) => `${m.role === 'assistant' ? 'Lily' : (m.name || '?')}：${m.text || '[图片]'}`);
         const body = {
             model: judgeCfg.model,
-            messages: [{ role: 'user', content: JUDGE_PROMPT + lines.join('\n') + '\n\n判断最后一条消息，只输出 REPLY 或 SKIP：' }],
+            messages: [{ role: 'user', content: JUDGE_PROMPT + lines.join('\n') + '\n\n判断最后一条消息，按上述格式输出：' }],
             temperature: 0.2,
             max_tokens: 1000,
         };
@@ -305,8 +315,12 @@ const safeReply = (msg, text) => {
         if (!res.ok) throw new Error(`judge HTTP ${res.status}`);
         const data = await res.json();
         const out = String(data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content || '').trim().toUpperCase();
-        if (/REPLY/.test(out)) return 'REPLY';
-        if (/SKIP/.test(out)) return 'SKIP';
+        if (/SKIP/.test(out)) return { verdict: 'SKIP', context: 0 };
+        const m = out.match(/REPLY\s*(\d{1,3})?/u);
+        if (m) {
+            const n = m[1] ? Math.min(Math.max(parseInt(m[1], 10), 4), 80) : 0;
+            return { verdict: 'REPLY', context: n };
+        }
         throw new Error(`judge 输出无法解析: ${out.slice(0, 40)}`);
     };
 
@@ -437,12 +451,6 @@ const safeReply = (msg, text) => {
         // 仅记录节奏供 !ai 快捷命令共享
         lastReplyAt.set(chatKey, Date.now());
 
-        const msgs = [{ role: 'system', content: systemPrompt }];
-        for (const m of h.slice(-maxHistory)) {
-            const prefix = m.role === 'assistant' ? '' : `${m.name}：`;
-            msgs.push({ role: m.role, content: prefix + (m.text || '') });
-        }
-
         // 图片：取「上一条 AI 回复之后」的图片 URL
         let images = [];
         for (let i = h.length - 1; i >= 0; i--) {
@@ -454,20 +462,28 @@ const safeReply = (msg, text) => {
         try {
             let answer;
             let judgeApproved = false;
+            let judgeContext = 0;   // 评审按语义判定的上下文容量（条数），0 = 用默认 maxHistory
             // auto 模式非强制回应：评审模型先判断是否值得回应（免费/便宜档），通过才调主模型生成。
             // 带图片的消息跳过评审（评审模型看不了图，交由主模型带视觉自判）。
             if (!force && !images.length && judgeCfg.apiKey) {
                 try {
-                    const verdict = await judgeChat(chatKey);
-                    if (verdict === 'SKIP') {
+                    const jc = await judgeChat(chatKey);
+                    if (jc.verdict === 'SKIP') {
                         log(`[${chatKey}] -> [SKIP]（评审模型 ${judgeCfg.model} 判定沉默）`);
                         return;
                     }
                     judgeApproved = true;   // 评审通过：主模型禁止再 [SKIP]，其决定即为最终回应决策
-                    log(`[${chatKey}] 评审通过，主模型生成回应`);
+                    judgeContext = jc.context;
+                    log(`[${chatKey}] 评审通过${judgeContext ? `（上下文 ${judgeContext} 条）` : ''}，主模型生成回应`);
                 } catch (e) {
                     log(`judge failed (${e.message})，退回主模型自判`);
                 }
+            }
+            // 主模型上下文：评审给出了容量按其取，否则默认 maxHistory
+            const msgs = [{ role: 'system', content: systemPrompt }];
+            for (const m of h.slice(-(judgeContext || maxHistory))) {
+                const prefix = m.role === 'assistant' ? '' : `${m.name}：`;
+                msgs.push({ role: m.role, content: prefix + (m.text || '') });
             }
             try {
                 answer = await geminiChat(msgs, images);
@@ -686,6 +702,31 @@ const safeReply = (msg, text) => {
     };
 
     bridge.addHook('bridge.send', intake);
+
+    // ---------------- 跨平台上下文合并 ----------------
+    // 桥接副本（源消息转发到其他互联群）写入目标群历史：互联群共享同一段对话上下文，
+    // QQ 侧 AI 也能看到 TG/Discord 等平台的发言（反之亦然）。
+    // 只合并历史，不触发回应评估——是否回应的判定仍发生在消息源平台，避免多平台双回复。
+    const intakeBridgeCopy = (msg2) => {
+        try {
+            const chatKey = msg2.to_uid;
+            if (!chatKey) return;
+            if (!(alwaysGroups.has(chatKey) || enabledChat.has(chatKey))) return;   // 仅维护启用群
+            if (msg2.isNotice) return;
+            const h = history.get(chatKey) || [];
+            if (msg2._pluginSource === 'aichat') {
+                // Lily 自己的回复桥接过来：记为 assistant 角色（剥 🤖 前缀），与其他群上下文对齐
+                const t = String(msg2.text || '').replace(/^🤖 ?/u, '').slice(0, 300);
+                if (t) h.push({ role: 'assistant', text: t });
+            } else {
+                const text = String(msg2.text || '').trim();
+                h.push({ role: 'user', name: msg2.nick || '?', text: (text || '[图片]').slice(0, 300) });
+            }
+            while (h.length > maxHistory) h.shift();
+            history.set(chatKey, h);
+        } catch (e) { /* 忽略 */ }
+    };
+    bridge.addHook('bridge.receive', intakeBridgeCopy);
 
     // ---------------- !ai 快捷单轮命令 ----------------
     const quickAsk = (context, cmd, param) => {

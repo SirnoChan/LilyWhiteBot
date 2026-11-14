@@ -47,16 +47,16 @@ const prepareMsg = (msg) => {
     return bridge.emitHook('bridge.send', msg);
 };
 
-// 消息記錄：互联群組的每條源消息寫入 SQLite message_log（非互联群組 mapto 為空，不記錄）。
+// 消息記錄：互联群組的每條消息寫入 SQLite message_log（非互联群組 mapto 為空，不記錄）。
+// 每條源消息記 1 + N 行：源群一行 + 各目標群一行（互聯上下文鏡像，AI 重建時可見跨平台發言）。
 // source 標識來源：'user'=群友發言 / 'notice'=系統通知 / 插件名=插件自發消息（設 _pluginSource，如 'aichat'）。
 // 必須讓 AI 插件能區分自己的消息與轉發消息，重建上下文時各自映射為 assistant/user 角色。
-const recordMessageLog = (msg) => {
+const logBridgeMessage = (msg, toUid) => {
     try {
-        const targets = msg.extra && msg.extra.mapto;
-        if (!Array.isArray(targets) || targets.length === 0) return;   // 非互联群組不記錄
+        if (!toUid) return;
         const source = msg._pluginSource || (msg.isNotice ? 'notice' : 'user');
         database.logMessage({
-            toUid: msg.to_uid,
+            toUid,
             fromUid: msg.from_uid,
             nick: msg.nick,
             text: msg.text,
@@ -121,8 +121,13 @@ const bridge = {
         }
 
         return prepareMsg(msg).then(() => {
-            // 記錄源消息（hook 鏈之後，記錄實際轉發的文本；非互联群組內部跳過）
-            recordMessageLog(msg);
+            // 記錄消息（hook 鏈之後，記錄實際轉發的文本；非互联群組 mapto 為空，不記錄）：
+            // 源群一行 + 各目標群一行（互聯上下文鏡像）
+            const logTargets = msg.extra.mapto;
+            if (Array.isArray(logTargets) && logTargets.length > 0) {
+                logBridgeMessage(msg, msg.to_uid);
+                for (let t of logTargets) logBridgeMessage(msg, t);
+            }
 
             // 全部訊息已傳送 resolve(true)，部分訊息已傳送 resolve(false)；
             // 所有訊息被拒絕傳送 reject()
@@ -140,6 +145,7 @@ const bridge = {
                 let client = new_uid.client;
 
                 msg2._sourceChat = msg.to;   // 源訊息所在的聊天（to 被改寫為目標前保存）
+                if (msg._pluginSource) msg2._pluginSource = msg._pluginSource;   // 插件來源標記傳遞給目標副本（BridgeMsg 構造器不拷貝自定義鍵）
                 promises.push(bridge.emitHook('bridge.receive', msg2).then(_ => {
                     let processor = processors.get(client);
                     if (processor) {

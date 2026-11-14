@@ -197,11 +197,15 @@ aichat:
   # 含来源列 user/notice/<插件名>，14 天自动清理），重启后 aichat 自动恢复最近上下文。无需配置。
   #
   # 回应评审模型（auto 模式先用便宜模型判断消息是否值得回应，通过才调主模型生成，省主模型调用费）。
+  # 评审看最近 judgeHistory 条（默认 40），输出 SKIP / REPLY / REPLY n（n=按语义判定的上下文条数）。
   # 默认复用 fallback 节的配置（z.ai glm-4.5-flash 免费），无需单独配置；如需更换：
   # judge:
   #   apiBase: "https://api.z.ai/api/paas/v4"
   #   apiKey: ""                               # 留空则复用 fallback；两者都无则退回主模型自判
   #   model: "glm-4.5-flash"
+  # judgeHistory: 40                          # 评审窗口条数
+  #
+  # 跨平台上下文：互联群共享对话历史（桥接副本自动并入各平台群上下文），无需配置。
   replyMode: auto
   replyAllIntervalSec: 30                   # all 模式逐条回应的发送间隔（秒）
   # replyAllQueueMax: 10                    # all 模式队列上限，超出丢弃最旧一条
