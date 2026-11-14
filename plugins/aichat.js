@@ -386,7 +386,7 @@ const safeReply = (msg, text) => {
     const ttsModel = ttsOpt.model || 'gemini-3.8-flash-tts';
     const ttsVoice = ttsOpt.voice || 'Leda';          // 女声；可用 Kore/Puck/Aoede 等
     const ttsMaxChars = ttsOpt.maxChars || 600;
-    const TTS_STYLE = '用轻快俏皮、元气满满的少女语气说：';
+    const TTS_STYLE = '用哈尔滨东北口音、元气满满的活泼少女声线说：';   // 口音/声线由提示词控制；预置音色见 tts.voice
 
     // PCM(16bit 单相) 包上 WAV 头，各平台语音接口都能吃
     const pcmToWav = (pcm, rate) => {
