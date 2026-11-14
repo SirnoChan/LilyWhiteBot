@@ -645,9 +645,9 @@ const safeReply = (msg, text) => {
             times.push(Date.now());
             while (times.length > 60) times.shift();
 
-            // 群历史（QQ 的 at 原始码可读化：机器人自己的 [CQ:at,qq=...] → ＠Lily，避免 LLM 看到噪音）
+            // 群历史（QQ 的 at 可读化：机器人自己的 @QQ号/＠qqQQ号 → ＠Lily，避免 LLM 看到裸号码）
             const selfQq = msg.handler && msg.handler._qq;
-            const displayText = selfQq ? text.replace(new RegExp(`\\[CQ:at,qq=${selfQq}\\]`, 'gu'), '＠Lily') : text;
+            const displayText = selfQq ? text.replace(new RegExp(`[@＠]qq?${selfQq}(?!\\d)`, 'gu'), '＠Lily') : text;
             const h = history.get(chatKey) || [];
             if (text || images.length) {
                 h.push({ role: 'user', name: msg.nick || msg.from_uid, text: (displayText || '[图片]').slice(0, 300), images: images.length ? images : undefined });

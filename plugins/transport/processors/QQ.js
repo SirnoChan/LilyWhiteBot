@@ -248,15 +248,15 @@ const init = (b, h, c, pm) => {
 
         if (!context.isPrivate && context.extra.ats && context.extra.ats.length > 0) {
             // 查询 QQ 的 at：缓存 → 批量成员列表（顺带预热缓存）→ 单查（重试一次）→ 兜底可读文本。
-            // 任何情况下原始 [CQ:at] 码都不出桥——否则跨平台看不到群昵称（曾因凌晨 API 抖动整批替换失败）。
+            // parser 已把 at 段转成文本「@QQ号」，这里把号码换成群昵称——否则跨平台只能看到裸号码
+            // （旧实现的 [CQ:at,...] 正则从未匹配过，昵称替换一直是死代码）。
             warmGroups.add(context.to);
 
             const resolveAts = async () => {
-                const ats = context.extra.ats;
+                const ats = context.extra.ats.filter((a) => /^\d+$/u.test(String(a)));
                 const resolved = new Map();   // at -> info | null
                 const missing = [];
                 for (const at of ats) {
-                    if (at === 'all') { resolved.set(at, null); continue; }   // 全体成员无需查询
                     const key = `${at}@${context.to}`;
                     if (groupInfo.has(key)) { resolved.set(at, groupInfo.get(key)); continue; }
                     missing.push(at);
@@ -300,12 +300,10 @@ const init = (b, h, c, pm) => {
             };
 
             resolveAts().then((resolved) => {
-                for (const at of context.extra.ats) {
+                for (const at of resolved.keys()) {
                     const info = resolved.get(at);
                     let atText;
-                    if (at === 'all') {
-                        atText = '＠全体成员';
-                    } else if (info) {
+                    if (info) {
                         const user = {
                             sender: {
                                 user_id: info.qq !== undefined ? info.qq : at,
@@ -315,9 +313,10 @@ const init = (b, h, c, pm) => {
                         };
                         atText = `＠${qqHandler.escape(qqHandler.getNick(user))}`;
                     } else {
-                        atText = `＠qq${at}`;   // 查不到昵称（API 全挂/已退群）：至少可读，不漏原始码
+                        atText = `＠qq${at}`;   // 查不到昵称（API 全挂/已退群）：至少可读，不漏裸号码
                     }
-                    context.text = context.text.replace(new RegExp(`\\[CQ:at,qq=${at}\\]`, 'gu'), atText);
+                    // parser 产出「@QQ号」；(?!\d) 防止误匹配更长号码的前缀
+                    context.text = context.text.replace(new RegExp(`@${at}(?!\\d)`, 'gu'), atText);
                 }
             }).catch(e => winston.error(e.stack)).then(() => send());
         } else {
