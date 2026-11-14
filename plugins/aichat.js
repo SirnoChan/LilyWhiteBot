@@ -288,15 +288,18 @@ const safeReply = (msg, text) => {
         if (!judgeCfg.apiKey) return 'REPLY';   // 未配置评审模型 → 退回主模型自判
         const h = (history.get(chatKey) || []).slice(-12);
         const lines = h.map((m) => `${m.role === 'assistant' ? 'Lily' : (m.name || '?')}：${m.text || '[图片]'}`);
+        const body = {
+            model: judgeCfg.model,
+            messages: [{ role: 'user', content: JUDGE_PROMPT + lines.join('\n') + '\n\n判断最后一条消息，只输出 REPLY 或 SKIP：' }],
+            temperature: 0.2,
+            max_tokens: 1000,
+        };
+        // GLM 系列关闭思考模式（否则评审延迟 6s+ 且易超时；实测关闭后 ~0.6s）
+        if (/z\.ai|bigmodel\.cn/u.test(judgeCfg.apiBase)) body.thinking = { type: 'disabled' };
         const res = await fetch(`${judgeCfg.apiBase}/chat/completions`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${judgeCfg.apiKey}` },
-            body: JSON.stringify({
-                model: judgeCfg.model,
-                messages: [{ role: 'user', content: JUDGE_PROMPT + lines.join('\n') + '\n\n判断最后一条消息，只输出 REPLY 或 SKIP：' }],
-                temperature: 0.2,
-                max_tokens: 1000,
-            }),
+            body: JSON.stringify(body),
             signal: AbortSignal.timeout(20000),
         });
         if (!res.ok) throw new Error(`judge HTTP ${res.status}`);
