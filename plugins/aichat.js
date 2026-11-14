@@ -629,6 +629,9 @@ const safeReply = (msg, text) => {
                         const processor = bridge.processors.get(msg.handler.type);
                         if (processor && voiceUrl) {
                             const vm = new bridge.BridgeMsg(msg, { nick: 'Lily', text: '', extra: { uploads: [{ url: voiceUrl, type: 'audio' }] } });
+                            // 绕过了 prepareMsg，补齐 receive 渲染所需的 extra 字段
+                            vm.extra.clientName = { shortname: msg.handler.id, fullname: msg.handler.type };
+                            vm.extra.clients = 1;
                             vm._pluginSource = 'aichat';
                             await processor.receive(vm);
                         }
