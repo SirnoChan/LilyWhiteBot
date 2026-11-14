@@ -189,9 +189,12 @@ aichat:
   # botNickTriggers: ["莉莉", "@Lily"]      # 文本命中即视为被@
   #
   # 回复预设（replyMode 三档，手动切换）：
-  #   auto    = 默认。被@/回复必须回应（无视冷却、禁止 [SKIP] 沉默），其余消息按话题密度自适应回应
+  #   auto    = 默认。被@/回复必须回应（禁止 [SKIP] 沉默）；其余消息是否回应交给 AI 判断（[SKIP] 沉默协议）
   #   all     = 群里每条消息都回应，排队按固定间隔逐条发送（命令除外）
   #   mention = 只回应被@/被回复的消息，其余一律沉默（历史仍记录作上下文）
+  #
+  # 群聊上下文跨重启持久化：互联群组消息自动记入 SQLite（plugins/data/lilywhite.db 的 message_log，
+  # 含来源列 user/notice/<插件名>，14 天自动清理），重启后 aichat 自动恢复最近上下文。无需配置。
   replyMode: auto
   replyAllIntervalSec: 30                   # all 模式逐条回应的发送间隔（秒）
   # replyAllQueueMax: 10                    # all 模式队列上限，超出丢弃最旧一条

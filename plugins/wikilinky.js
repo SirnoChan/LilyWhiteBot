@@ -106,10 +106,12 @@ const processlinky = (context, bridge) => {
                 context.reply(links.map(l => l.link).join('  '));
                 // 若互聯且在公開群組調用，則讓其他群也看到連結
                 if (bridge && !context.isPrivate) {
-                    bridge.send(new BridgeMsg(context, {
+                    const bm = new BridgeMsg(context, {
                         text: links.map(l => l.link).join('  '),
                         isNotice: true,
-                    }));
+                    });
+                    bm._pluginSource = 'wikilinky';   // 插件来源标记（消息记录用）
+                    bridge.send(bm);
                 }
             }
         }

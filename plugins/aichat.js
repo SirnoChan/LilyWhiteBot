@@ -3,9 +3,11 @@
  *
  * 能力（跨所有互联平台）：
  * - 三档回复预设（config.yml aichat.replyMode 手动切换）：
- *     auto    = 默认。被@/回复必须回应（无视冷却、禁止 [SKIP] 沉默），其余消息按话题密度自适应回应
+ *     auto    = 默认。被@/回复必须回应（禁止 [SKIP] 沉默）；其余消息是否回应交给 AI 判断
+ *               （[SKIP] 沉默协议，无冷却/长度/重复预过滤，防抖仅合并连续发言）
  *     all     = 群里每条消息都回应（排队逐条发送，间隔 replyAllIntervalSec，默认 30 秒）
  *     mention = 只回应被@/被回复的消息，其余保持沉默（历史照常记录作上下文）
+ * - 上下文持久化：互联群组消息记录在 SQLite message_log（含插件来源列），重启后自动恢复群聊上下文
  * - @/回复触发：@机器人昵称、回复机器人桥接消息 → 立即回答
  * - 看图：消息里的图片以 inline_data 送 Gemini 视觉
  * - 画图：文字模型输出 [DRAW:提示词] → Nano Banana 生成（支持图生图：参考图一并送入），
@@ -53,7 +55,7 @@ module.exports = (pluginManager, options) => {
     const systemPrompt = options.systemPrompt || '你是群聊 AI 助手。用简体中文回答，简洁自然。';
     const fallback = options.fallback || {};
     const triggerAll = options.triggerAll !== false;
-    // 三档回复预设：auto（被@/回复必答 + 其余密度自适应）/ all（逐条必答，间隔发送）/ mention（只答被@/回复）
+    // 三档回复预设：auto（被@/回复必答，其余是否回应由 AI 判断）/ all（逐条必答，间隔发送）/ mention（只答被@/回复）
     // 未显式配置时兼容旧 triggerAll：false → mention，true（默认）→ auto
     const replyMode = ['all', 'auto', 'mention'].includes(options.replyMode)
         ? options.replyMode
@@ -61,10 +63,8 @@ module.exports = (pluginManager, options) => {
     const replyAllIntervalMs = (options.replyAllIntervalSec || 30) * 1000;
     const replyAllQueueMax = options.replyAllQueueMax || 10;
     const debounceMs = options.debounceMs || 6000;
-    const cooldownMs = (options.cooldownSec || 30) * 1000;
-    // 话题密度动态间隔：群越吵，回应间隔越长、防抖越久
-    const cooldownMinMs = (options.cooldownSecMin || 15) * 1000;
-    const cooldownMaxMs = (options.cooldownSecMax || 240) * 1000;
+    const cooldownMs = (options.cooldownSec || 30) * 1000;   // 仅 !ai 快捷命令使用；群聊回应不再有冷却门槛
+    // 话题密度动态防抖：群越吵，防抖合并窗口越长
     const debounceMinMs = options.debounceMinMs || 4000;
     const debounceMaxMs = options.debounceMaxMs || 15000;
     const msgTimes = new Map();   // chatKey -> 最近消息时间戳（算话题密度用）
@@ -97,7 +97,6 @@ module.exports = (pluginManager, options) => {
     const history = new Map();       // chatKey -> [{ role, name, text, images? }]
     const pendingTimers = new Map(); // chatKey -> 防抖 timer
     const lastReplyAt = new Map();
-    const lastMsgText = new Map();
     const daily = { date: '', n: 0 };
 
     // 话题密度（0-1）：按最近 60 秒内的消息条数归一（25 条/分钟封顶）
@@ -132,6 +131,37 @@ module.exports = (pluginManager, options) => {
         : '\n\n【硬性要求】本群当前为逐条回应模式，每一条消息都必须得到你的回应；禁止输出 [SKIP]，禁止保持沉默。';
     // 重试后模型仍坚持沉默时的保底回应
     const forcedFallbackText = '（在的在的……不过这条我真不知道说什么好，能再说具体一点吗）';
+
+    // 重启后从 SQLite message_log 恢复群聊上下文（bridge 只记录互联群组）：
+    // source='user' → 群友发言（user 角色），source='aichat' → Lily 自己的回复（assistant 角色）
+    const rebuildHistoryFromDb = () => {
+        let database;
+        try {
+            database = require('../lib/database.js');   // transport 插件已先完成 init（config 插件顺序）
+        } catch (e) {
+            return;
+        }
+        for (const chatKey of enabledChat) {
+            try {
+                const rows = database.getRecentMessages(chatKey, maxHistory);
+                if (!rows || !rows.length) continue;
+                const h = [];
+                for (const r of rows) {
+                    if (r.source === 'user') {
+                        h.push({ role: 'user', name: r.nick || r.from_uid || '?', text: String(r.text || '').slice(0, 300) || '[图片]' });
+                    } else if (r.source === 'aichat') {
+                        const t = String(r.text || '').replace(/^🤖 ?/u, '').slice(0, 300);
+                        if (t) h.push({ role: 'assistant', text: t });
+                    }
+                }
+                if (h.length) {
+                    history.set(chatKey, h);
+                    log(`[${chatKey}] 从数据库恢复 ${h.length} 条上下文`);
+                }
+            } catch (e) { /* 单群恢复失败不影响其他群 */ }
+        }
+    };
+    rebuildHistoryFromDb();
 
 // BridgeMsg 没有 reply 方法；统一经 handler.reply 路由（返回 Promise 或 void）
 const safeReply = (msg, text) => {
@@ -334,7 +364,7 @@ const safeReply = (msg, text) => {
                     text: (text ? '🖼 ' : '') + urls.join(' '),
                     extra: { files },
                 });
-                bm._aichatSelf = true;   // 标记自己的广播，回流 intake 时跳过
+                bm._pluginSource = 'aichat';   // 插件来源标记：消息记录归属 + intake 跳过自己的广播回流
                 bridge.send(bm);
                 for (const im of tmpImages) fs.unlink(im.path, () => {});
             } catch (e) {
@@ -362,12 +392,9 @@ const safeReply = (msg, text) => {
         if (daily.n >= dailyLimit) {
             return void (explicit ? safeReply(msg, '（今天的额度用完了，明天再来吧）') : undefined);
         }
-        const now = Date.now();
-        const density = densityOf(chatKey);
-        const effCooldown = Math.round(cooldownMs + (cooldownMaxMs - cooldownMs) * density);
-        // 强制回应（被@/回复、all 模式）不吃冷却——点名必须答
-        if (!force && now - (lastReplyAt.get(chatKey) || 0) < Math.max(cooldownMinMs, effCooldown - cooldownMinMs)) return;
-        lastReplyAt.set(chatKey, now);
+        // 是否回应不做冷却门槛——auto 模式由 AI 判断（[SKIP] 沉默协议），被@/回复与 all 模式必答；
+        // 仅记录节奏供 !ai 快捷命令共享
+        lastReplyAt.set(chatKey, Date.now());
 
         const msgs = [{ role: 'system', content: systemPrompt }];
         for (const m of h.slice(-maxHistory)) {
@@ -391,12 +418,10 @@ const safeReply = (msg, text) => {
                 log(`gemini failed (${e.message}), using GLM fallback`);
                 answer = await fallbackChat(msgs);
             }
-            daily.n++;
-            // 沉默協議：模型判斷不值得回應時只輸出 [SKIP]，保持安靜且不佔回應節奏（强制回应场景除外）
+            // 沉默協議：模型判斷不值得回應時只輸出 [SKIP]，保持安靜（强制回应场景除外）
             if (/^\[SKIP\]\s*$/u.test(answer.trim())) {
                 if (!force) {
-                    lastReplyAt.delete(chatKey);      // 不佔冷卻，下一條消息正常評估
-                    log(`[${chatKey}] -> [SKIP]（保持沉默）`);
+                    log(`[${chatKey}] -> [SKIP]（AI 决定保持沉默）`);
                     return;
                 }
                 // 被点名/逐条模式禁止沉默：附加硬性要求重试一次（Gemini → GLM 兜底），仍沉默则给保底回应
@@ -414,6 +439,7 @@ const safeReply = (msg, text) => {
                 }
                 if (!answer || /^\[SKIP\]\s*$/u.test(answer.trim())) answer = forcedFallbackText;
             }
+            daily.n++;   // 每日额度只计实际回复——auto 模式下 [SKIP] 沉默决策不消耗额度
 
             // 画图：解析 [DRAW: ...] 标记（支持多张）
             const drawMatches = [...answer.matchAll(/\[DRAW:\s*([^\]]{5,600})\]/gu)];
@@ -452,7 +478,7 @@ const safeReply = (msg, text) => {
             await safeReply(msg, answer.slice(0, maxReplyChars));
             try {
                 const bm = new bridge.BridgeMsg(msg, { text: '🤖 ' + answer.slice(0, maxReplyChars), nick: 'Lily' });
-                bm._aichatSelf = true;   // 标记自己的广播，回流 intake 时跳过
+                bm._pluginSource = 'aichat';   // 插件来源标记：消息记录归属 + intake 跳过自己的广播回流
                 bridge.send(bm);
             } catch (e) { /* 橋接失敗忽略 */ }
             log(`[${chatKey}] -> (${answer.length}字) ${answer.slice(0, 160)}`);
@@ -499,8 +525,8 @@ const safeReply = (msg, text) => {
     // ---------------- intake（bridge.send 钩子，每条源消息进一次） ----------------
     const intake = (msg) => {
         try {
-            // 自己桥接广播的回流：跳过（回应内容已作为 assistant 记入历史，避免 all 模式自循环与重复记录）
-            if (msg._aichatSelf) return Promise.resolve();
+            // 自己广播的回流：跳过（回应已作为 assistant 记入历史，避免自循环与重复记录）
+            if (msg._pluginSource === 'aichat') return Promise.resolve();
             const chatKey = msg.to_uid;
             if (!chatKey) return Promise.resolve();
 
@@ -565,14 +591,8 @@ const safeReply = (msg, text) => {
             const nickHit = botNickTriggers.some((n) => text.includes(n));
             const explicit = replyToBot || nickHit;
 
-            // 免触模式下去重（仅 auto 档需要）
-            if (!explicit && replyMode === 'auto' && triggerAll && text && text === (lastMsgText.get(chatKey) || '')) {
-                return Promise.resolve();
-            }
-            lastMsgText.set(chatKey, text || '');
-
             if (explicit) {
-                // 被@/回复：任何模式都必须回应（无视冷却、禁止 [SKIP] 沉默）
+                // 被@/回复：任何模式都必须回应（禁止 [SKIP] 沉默）
                 if (pendingTimers.has(chatKey)) {
                     clearTimeout(pendingTimers.get(chatKey));
                     pendingTimers.delete(chatKey);
@@ -591,9 +611,9 @@ const safeReply = (msg, text) => {
                 return Promise.resolve();
             }
 
-            // auto：话题密度自适应（原有逻辑）
-            const tooShort = text.length < 3 && !images.length;
-            if (triggerAll && (text || images.length) && !commandLike && !tooShort) {
+            // auto：是否回应交给 AI 判断（[SKIP] 沉默协议），不做冷却/长度/重复预过滤；
+            // 仅跳过命令消息（归命令系统），防抖合并连续发言
+            if (triggerAll && (text || images.length) && !commandLike) {
                 if (pendingTimers.has(chatKey)) clearTimeout(pendingTimers.get(chatKey));
                 const density = densityOf(chatKey);
                 const effDebounce = lerp(debounceMinMs, debounceMaxMs, density);
@@ -626,7 +646,7 @@ const safeReply = (msg, text) => {
             context.reply(text).catch(() => {});
             try {
                 const bm = new bridge.BridgeMsg(context, { text: '🤖 ' + text });
-                bm._aichatSelf = true;
+                bm._pluginSource = 'aichat';
                 bridge.send(bm);
             } catch (e) { /* 忽略 */ }
         }).catch((e) => {

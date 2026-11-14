@@ -37,10 +37,12 @@ module.exports = (pluginManager, options) => {
 
         // 如果開啟了互聯，而且是在公開群組中使用本命令，那麼讓其他群也看見掀桌
         if (bridge && !context.isPrivate) {
-            bridge.send(new BridgeMsg(context, {
+            const bm = new BridgeMsg(context, {
                 text: `${action} ${context.param}`,
                 isNotice: true,
-            }));
+            });
+            bm._pluginSource = 'pia';   // 插件来源标记（消息记录用）
+            bridge.send(bm);
         }
     };
 

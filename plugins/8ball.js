@@ -26,10 +26,12 @@ module.exports = (pluginManager, options) => {
         winston.debug(`[8ball.js] Msg #${context.msgId} 8ball: ${result}`);
 
         if (bridge && !context.isPrivate) {
-            bridge.send(new BridgeMsg(context, {
+            const bm = new BridgeMsg(context, {
                 text: `8ball: ${result}`,
                 isNotice: true,
-            }));
+            });
+            bm._pluginSource = '8ball';   // 插件来源标记（消息记录用）
+            bridge.send(bm);
         }
     };
 
