@@ -286,8 +286,9 @@ const safeReply = (msg, text) => {
     // 评审窗口比主模型默认上下文更大，以便按语义回溯需要多少条历史（REPLY 数字）
     const judgeHistory = options.judgeHistory || 40;
     const JUDGE_PROMPT = '你是群聊 AI「Lily」的回应评审。根据最近群聊记录（可能包含跨平台互联群友的发言），判断 Lily 是否应该回应最新一条消息。\n' +
-        '值得回应（REPLY）：有具体内容可聊、有人提问或求助、有人提到或问候 Lily、接得上话的趣事。\n' +
+        '值得回应（REPLY）：有具体内容可聊、有人提问或求助、有人提到或问候 Lily、能接上的趣事。\n' +
         '不值得回应（SKIP）：纯表情或灌水、无信息量的单字、明显不是说给 Lily 听、没有可回应的内容。\n' +
+        '特别注意：消息中出现 ＠Lily、@Lily White、莉莉、@Lily_White_bot 等提及 Lily 的内容，或是在回复 Lily 说的话，一律视为点名，必须 REPLY。\n' +
         '平时宁可不说话，不确定时倾向 SKIP。\n' +
         '输出格式（三选一）：\n' +
         'SKIP\n' +
@@ -644,10 +645,12 @@ const safeReply = (msg, text) => {
             times.push(Date.now());
             while (times.length > 60) times.shift();
 
-            // 群历史
+            // 群历史（QQ 的 at 原始码可读化：机器人自己的 [CQ:at,qq=...] → ＠Lily，避免 LLM 看到噪音）
+            const selfQq = msg.handler && msg.handler._qq;
+            const displayText = selfQq ? text.replace(new RegExp(`\\[CQ:at,qq=${selfQq}\\]`, 'gu'), '＠Lily') : text;
             const h = history.get(chatKey) || [];
             if (text || images.length) {
-                h.push({ role: 'user', name: msg.nick || msg.from_uid, text: (text || '[图片]').slice(0, 300), images: images.length ? images : undefined });
+                h.push({ role: 'user', name: msg.nick || msg.from_uid, text: (displayText || '[图片]').slice(0, 300), images: images.length ? images : undefined });
             }
             while (h.length > maxHistory) h.shift();
             history.set(chatKey, h);
@@ -662,7 +665,14 @@ const safeReply = (msg, text) => {
                 return false;
             })();
             const nickHit = botNickTriggers.some((n) => text.includes(n));
-            const explicit = replyToBot || nickHit;
+            // QQ：消息 at 了机器人也算点名（extra.ats 含机器人 QQ 号）——群资料查询失败时
+            // 文本里的 [CQ:at,qq=...] 不会被替换成昵称，纯文本匹配会漏判 @ 提问
+            const atHit = (() => {
+                const ats = msg.extra && msg.extra.ats;
+                if (!Array.isArray(ats) || !ats.length || !selfQq) return false;
+                return ats.some((a) => parseInt(a, 10) === selfQq);
+            })();
+            const explicit = replyToBot || nickHit || atHit;
 
             if (explicit) {
                 // 被@/回复：任何模式都必须回应（禁止 [SKIP] 沉默）
