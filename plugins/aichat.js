@@ -3,8 +3,8 @@
  *
  * 能力（跨所有互联平台）：
  * - 三档回复预设（config.yml aichat.replyMode 手动切换）：
- *     auto    = 默认。被@/回复必须回应（禁止 [SKIP] 沉默）；其余消息是否回应交给 AI 判断
- *               （[SKIP] 沉默协议，无冷却/长度/重复预过滤，防抖仅合并连续发言）
+ *     auto    = 默认。被@/回复必须回应（禁止 [SKIP] 沉默）；其余消息先由便宜评审模型判断
+ *               是否值得回应（通过才调主模型生成；带图片消息跳过评审），评审的决定即最终决策
  *     all     = 群里每条消息都回应（排队逐条发送，间隔 replyAllIntervalSec，默认 30 秒）
  *     mention = 只回应被@/被回复的消息，其余保持沉默（历史照常记录作上下文）
  * - 上下文持久化：互联群组消息记录在 SQLite message_log（含插件来源列），重启后自动恢复群聊上下文
@@ -21,7 +21,7 @@
  *
  * aichat:
  *   systemPrompt: "..."
- *   apiBase / apiKey / model / search / imageModel / safetyOff / fallback{...}
+ *   apiBase / apiKey / model / search / imageModel / safetyOff / fallback{...} / judge{...}
  *   triggerAll: true
  *   replyMode: auto                    # auto（默认）/ all / mention 三档预设
  *   replyAllIntervalSec: 30            # all 模式逐条回应的间隔（秒）
@@ -54,6 +54,14 @@ module.exports = (pluginManager, options) => {
     const safetyOff = options.safetyOff !== false;
     const systemPrompt = options.systemPrompt || '你是群聊 AI 助手。用简体中文回答，简洁自然。';
     const fallback = options.fallback || {};
+    // 回应评审模型（auto 模式先用便宜模型判断消息是否值得回应，通过才调主模型生成）。
+    // 默认复用 fallback 配置（z.ai glm-4.5-flash 免费）；无 fallback key 时退回主模型自判。
+    const judgeOpt = options.judge || {};
+    const judgeCfg = {
+        apiBase: (judgeOpt.apiBase || fallback.apiBase || 'https://api.z.ai/api/paas/v4').replace(/\/+$/u, ''),
+        apiKey: judgeOpt.apiKey || fallback.apiKey || '',
+        model: judgeOpt.model || fallback.model || 'glm-4.5-flash',
+    };
     const triggerAll = options.triggerAll !== false;
     // 三档回复预设：auto（被@/回复必答，其余是否回应由 AI 判断）/ all（逐条必答，间隔发送）/ mention（只答被@/回复）
     // 未显式配置时兼容旧 triggerAll：false → mention，true（默认）→ auto
@@ -125,10 +133,12 @@ module.exports = (pluginManager, options) => {
 
     const log = (...a) => winston.info(`[aichat] ${a.join(' ')}`);
 
-    // 强制回应场景（被@/回复点名，或 all 模式）附加到 system prompt 的硬性要求
-    const forceSuffix = (explicit) => explicit
+    // 强制回应场景（被@/回复点名 / all 模式 / 评审通过）附加到 system prompt 的硬性要求
+    const forceSuffix = (explicit, judgeApproved) => explicit
         ? '\n\n【硬性要求】用户刚刚@了你或回复了你的消息，这是点名，必须针对其内容给出实质回应；禁止输出 [SKIP]，禁止保持沉默。'
-        : '\n\n【硬性要求】本群当前为逐条回应模式，每一条消息都必须得到你的回应；禁止输出 [SKIP]，禁止保持沉默。';
+        : (judgeApproved
+            ? '\n\n【硬性要求】评审已判定这条消息值得回应，请给出简短自然的回应；禁止输出 [SKIP]，禁止保持沉默。'
+            : '\n\n【硬性要求】本群当前为逐条回应模式，每一条消息都必须得到你的回应；禁止输出 [SKIP]，禁止保持沉默。');
     // 重试后模型仍坚持沉默时的保底回应
     const forcedFallbackText = '（在的在的……不过这条我真不知道说什么好，能再说具体一点吗）';
 
@@ -267,6 +277,34 @@ const safeReply = (msg, text) => {
             await new Promise((r) => setTimeout(r, 3000));
             return await call();
         }
+    };
+
+    // ---------------- 回应评审（auto 模式，便宜模型先判断是否值得回应） ----------------
+    const JUDGE_PROMPT = '你是群聊 AI「Lily」的回应评审。根据最近群聊记录，判断 Lily 是否应该回应最新一条消息。\n' +
+        '值得回应（REPLY）：有具体内容可聊、有人提问或求助、有人提到或问候 Lily、能接上的趣事。\n' +
+        '不值得回应（SKIP）：纯表情或灌水、无信息量的单字、明显不是说给 Lily 听、没有可回应的内容。\n' +
+        '平时宁可不说话，不确定时倾向 SKIP。只输出 REPLY 或 SKIP 一个词，不要输出其他内容。\n\n最近群聊记录：\n';
+    const judgeChat = async (chatKey) => {
+        if (!judgeCfg.apiKey) return 'REPLY';   // 未配置评审模型 → 退回主模型自判
+        const h = (history.get(chatKey) || []).slice(-12);
+        const lines = h.map((m) => `${m.role === 'assistant' ? 'Lily' : (m.name || '?')}：${m.text || '[图片]'}`);
+        const res = await fetch(`${judgeCfg.apiBase}/chat/completions`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${judgeCfg.apiKey}` },
+            body: JSON.stringify({
+                model: judgeCfg.model,
+                messages: [{ role: 'user', content: JUDGE_PROMPT + lines.join('\n') + '\n\n判断最后一条消息，只输出 REPLY 或 SKIP：' }],
+                temperature: 0.2,
+                max_tokens: 1000,
+            }),
+            signal: AbortSignal.timeout(20000),
+        });
+        if (!res.ok) throw new Error(`judge HTTP ${res.status}`);
+        const data = await res.json();
+        const out = String(data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content || '').trim().toUpperCase();
+        if (/REPLY/.test(out)) return 'REPLY';
+        if (/SKIP/.test(out)) return 'SKIP';
+        throw new Error(`judge 输出无法解析: ${out.slice(0, 40)}`);
     };
 
     // ---------------- 画图 ----------------
@@ -412,22 +450,38 @@ const safeReply = (msg, text) => {
 
         try {
             let answer;
+            let judgeApproved = false;
+            // auto 模式非强制回应：评审模型先判断是否值得回应（免费/便宜档），通过才调主模型生成。
+            // 带图片的消息跳过评审（评审模型看不了图，交由主模型带视觉自判）。
+            if (!force && !images.length && judgeCfg.apiKey) {
+                try {
+                    const verdict = await judgeChat(chatKey);
+                    if (verdict === 'SKIP') {
+                        log(`[${chatKey}] -> [SKIP]（评审模型 ${judgeCfg.model} 判定沉默）`);
+                        return;
+                    }
+                    judgeApproved = true;   // 评审通过：主模型禁止再 [SKIP]，其决定即为最终回应决策
+                    log(`[${chatKey}] 评审通过，主模型生成回应`);
+                } catch (e) {
+                    log(`judge failed (${e.message})，退回主模型自判`);
+                }
+            }
             try {
                 answer = await geminiChat(msgs, images);
             } catch (e) {
                 log(`gemini failed (${e.message}), using GLM fallback`);
                 answer = await fallbackChat(msgs);
             }
-            // 沉默協議：模型判斷不值得回應時只輸出 [SKIP]，保持安靜（强制回应场景除外）
+            // 沉默協議：模型判斷不值得回應時只輸出 [SKIP]，保持安靜（强制回应/评审通过场景除外）
             if (/^\[SKIP\]\s*$/u.test(answer.trim())) {
-                if (!force) {
+                if (!force && !judgeApproved) {
                     log(`[${chatKey}] -> [SKIP]（AI 决定保持沉默）`);
                     return;
                 }
-                // 被点名/逐条模式禁止沉默：附加硬性要求重试一次（Gemini → GLM 兜底），仍沉默则给保底回应
+                // 被点名/逐条/评审通过禁止沉默：附加硬性要求重试一次（Gemini → GLM 兜底），仍沉默则给保底回应
                 log(`[${chatKey}] -> [SKIP] 但本次必须回应，重试`);
                 const msgs2 = msgs.slice();
-                msgs2[0] = { role: 'system', content: msgs[0].content + forceSuffix(explicit) };
+                msgs2[0] = { role: 'system', content: msgs[0].content + forceSuffix(explicit, judgeApproved) };
                 try {
                     answer = await geminiChat(msgs2, images);
                 } catch (e2) {
@@ -660,5 +714,5 @@ const safeReply = (msg, text) => {
         handler.addCommand('/ai', quickAsk);
     }
 
-    winston.info(`[aichat] ready (model: ${model}, search: ${searchEnabled}, image: ${imageModel || 'off'}, replyMode: ${replyMode}, triggerAll: ${triggerAll}, alwaysGroups: ${alwaysGroups.size})`);
+    winston.info(`[aichat] ready (model: ${model}, judge: ${judgeCfg.apiKey ? judgeCfg.model : 'off'}, search: ${searchEnabled}, image: ${imageModel || 'off'}, replyMode: ${replyMode}, triggerAll: ${triggerAll}, alwaysGroups: ${alwaysGroups.size})`);
 };
