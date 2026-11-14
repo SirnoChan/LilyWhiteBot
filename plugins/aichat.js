@@ -163,7 +163,7 @@ module.exports = (pluginManager, options) => {
                     if (r.source === 'user') {
                         h.push({ role: 'user', name: r.nick || r.from_uid || '?', text: String(r.text || '').slice(0, 300) || '[图片]' });
                     } else if (r.source === 'aichat') {
-                        const t = String(r.text || '').replace(/^🤖 ?/u, '').slice(0, 300);
+                        const t = String(r.text || '').replace(/^[🤖🔊] ?/u, '').slice(0, 300);
                         if (t) h.push({ role: 'assistant', text: t });
                     }
                 }
@@ -614,18 +614,11 @@ const safeReply = (msg, text) => {
             h.push({ role: 'assistant', text: answer.slice(0, 300) });
             while (h.length > maxHistory) h.shift();
             for (const m of h) m.images = undefined;
-            await safeReply(msg, answer.slice(0, maxReplyChars));
-            try {
-                const bm = new bridge.BridgeMsg(msg, { text: '🤖 ' + answer.slice(0, maxReplyChars), nick: 'Lily' });
-                bm._pluginSource = 'aichat';   // 插件来源标记：消息记录归属 + intake 跳过自己的广播回流
-                bridge.send(bm);
-            } catch (e) { /* 橋接失敗忽略 */ }
-            log(`[${chatKey}] -> (${answer.length}字) ${answer.slice(0, 160)}`);
 
-            // 语音投递：文本已先发出，语音随后生成发送（TTS 失败不影响文字回复）
-            if (ttsEnabled && wantsVoice && answer.trim()) {
+            // 语音回复（短回复）：只发语音气泡不发文字——先生成语音，成功才替换文字路径，失败退回文字
+            if (ttsEnabled && wantsVoice && answer.trim().length <= ttsMaxChars) {
                 try {
-                    const wavPath = await geminiSpeak(answer.slice(0, maxReplyChars));
+                    const wavPath = await geminiSpeak(answer);
                     const voiceUrl = await s3Upload(fs.readFileSync(wavPath), '.wav');
                     // 源平台：直接走该平台 processor 的 receive，语音以原生形式发进源群（QQ=CQ:record / TG=sendAudio / Discord=附件）
                     try {
@@ -641,7 +634,55 @@ const safeReply = (msg, text) => {
                     } catch (e2) {
                         log(`source voice send failed: ${e2.message}`);
                     }
-                    // 其他平台：语音文件走桥接（file.js 上传后按 audio 发送）
+                    // 其他平台：正文 + 语音文件（🔊 前缀在合并历史/重建时剥掉）
+                    try {
+                        const bm = new bridge.BridgeMsg(msg, { nick: 'Lily', text: '🔊 ' + answer.slice(0, maxReplyChars), extra: { files: [{ client: msg.handler.type, type: 'voice', path: wavPath, name: 'reply.wav' }] } });
+                        bm._pluginSource = 'aichat';
+                        await bridge.send(bm);
+                    } catch (e3) { /* 橋接失敗忽略 */ }
+                    fs.unlink(wavPath, () => {});
+                    // 源群直发不经 bridge.send，手动补记消息（重建上下文用）
+                    try {
+                        require('../lib/database.js').logMessage({ toUid: chatKey, fromUid: msg.from_uid, nick: 'Lily', text: answer.slice(0, maxReplyChars), source: 'aichat', client: msg.handler ? msg.handler.type : null });
+                    } catch (e4) { /* 忽略 */ }
+                    log(`[${chatKey}] -> [语音] (${ttsModel}/${ttsVoice})`);
+                } catch (e2) {
+                    log(`TTS failed (${e2.message})，退回文字回复`);
+                    await safeReply(msg, answer.slice(0, maxReplyChars));
+                    try {
+                        const bm = new bridge.BridgeMsg(msg, { text: '🤖 ' + answer.slice(0, maxReplyChars), nick: 'Lily' });
+                        bm._pluginSource = 'aichat';
+                        bridge.send(bm);
+                    } catch (e3) { /* 橋接失敗忽略 */ }
+                }
+                return;
+            }
+
+            await safeReply(msg, answer.slice(0, maxReplyChars));
+            try {
+                const bm = new bridge.BridgeMsg(msg, { text: '🤖 ' + answer.slice(0, maxReplyChars), nick: 'Lily' });
+                bm._pluginSource = 'aichat';   // 插件来源标记：消息记录归属 + intake 跳过自己的广播回流
+                bridge.send(bm);
+            } catch (e) { /* 橋接失敗忽略 */ }
+            log(`[${chatKey}] -> (${answer.length}字) ${answer.slice(0, 160)}`);
+
+            // 长回复（>ttsMaxChars）的语音：文字已发（内容完整），语音随后覆盖前段
+            if (ttsEnabled && wantsVoice) {
+                try {
+                    const wavPath = await geminiSpeak(answer.slice(0, maxReplyChars));
+                    const voiceUrl = await s3Upload(fs.readFileSync(wavPath), '.wav');
+                    try {
+                        const processor = bridge.processors.get(msg.handler.type);
+                        if (processor && voiceUrl) {
+                            const vm = new bridge.BridgeMsg(msg, { nick: 'Lily', text: '', extra: { uploads: [{ url: voiceUrl, type: 'audio' }] } });
+                            vm.extra.clientName = { shortname: msg.handler.id, fullname: msg.handler.type };
+                            vm.extra.clients = 1;
+                            vm._pluginSource = 'aichat';
+                            await processor.receive(vm);
+                        }
+                    } catch (e2) {
+                        log(`source voice send failed: ${e2.message}`);
+                    }
                     try {
                         const bm = new bridge.BridgeMsg(msg, { nick: 'Lily', text: '🔊', extra: { files: [{ client: msg.handler.type, type: 'voice', path: wavPath, name: 'reply.wav' }] } });
                         bm._pluginSource = 'aichat';
@@ -822,8 +863,8 @@ const safeReply = (msg, text) => {
             if (msg2.isNotice) return;
             const h = history.get(chatKey) || [];
             if (msg2._pluginSource === 'aichat') {
-                // Lily 自己的回复桥接过来：记为 assistant 角色（剥 🤖 前缀），与其他群上下文对齐
-                const t = String(msg2.text || '').replace(/^🤖 ?/u, '').slice(0, 300);
+                // Lily 自己的回复桥接过来：记为 assistant 角色（剥 🤖/🔊 前缀），与其他群上下文对齐
+                const t = String(msg2.text || '').replace(/^[🤖🔊] ?/u, '').slice(0, 300);
                 if (t) h.push({ role: 'assistant', text: t });
             } else {
                 const text = String(msg2.text || '').trim();
