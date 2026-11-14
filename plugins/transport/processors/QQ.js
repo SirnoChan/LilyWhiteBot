@@ -513,9 +513,13 @@ const receive = async (msg) => {
         }
     }
 
-    record(await qqHandler.say(msg.to, output, {
-        noEscape: true
-    }));
+    // 空文本消息（如 aichat 语音直发）不发送模板残片（会渲染成「[Lily]」之类的空壳行），只发媒体
+    const hasText = String(msg.text || '').trim().length > 0;
+    if (hasText || mediaMessages.length === 0) {
+        record(await qqHandler.say(msg.to, output, {
+            noEscape: true
+        }));
+    }
 
     // 影片/語音在 NT QQ 中以卡片形式渲染、同條消息中的文字不會顯示，
     // 故單獨發送（說話人資訊在上面那條文字消息中）
