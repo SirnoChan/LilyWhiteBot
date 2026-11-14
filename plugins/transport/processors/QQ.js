@@ -21,9 +21,25 @@ let bannedMessage = new LRU.LRUCache({
     ttl: 300000,
 });
 let groupInfo = new LRU.LRUCache({
-    max: 500,
+    max: 5000,   // 成员列表预热会整群写入（一条约百字节），5000 条 ≈ 数个大群
     ttl: 3600000,
 });
+// 群成员昵称缓存预热：at 替换不依赖消息时刻的 API 状态（凌晨 NapCat 抖动时用白天的缓存）
+const warmGroups = new Set();
+setInterval(() => {
+    for (const g of warmGroups) {
+        qqHandler.groupMemberList(g).then((list) => {
+            if (Array.isArray(list)) {
+                for (const m of list) {
+                    const info = { qq: m.user_id !== undefined ? m.user_id : m.qq, name: m.nickname, groupCard: m.card };
+                    if (info.qq !== undefined && info.qq !== null) {
+                        groupInfo.set(`${info.qq}@${g}`, info);
+                    }
+                }
+            }
+        }).catch(() => { /* 下轮再试 */ });
+    }
+}, 20 * 60 * 1000).unref();
 
 let bridge = null;
 let pluginManager = null;
@@ -231,33 +247,77 @@ const init = (b, h, c, pm) => {
         }
 
         if (!context.isPrivate && context.extra.ats && context.extra.ats.length > 0) {
-            // 查询 QQ 的 at
-            let promises = [];
+            // 查询 QQ 的 at：缓存 → 批量成员列表（顺带预热缓存）→ 单查（重试一次）→ 兜底可读文本。
+            // 任何情况下原始 [CQ:at] 码都不出桥——否则跨平台看不到群昵称（曾因凌晨 API 抖动整批替换失败）。
+            warmGroups.add(context.to);
 
-            for (let at of context.extra.ats) {
-                if (groupInfo.has(`${at}@${context.to}`)) {
-                    promises.push(Promise.resolve(groupInfo.get(`${at}@${context.to}`)));
-                } else {
-                    promises.push(qqHandler.groupMemberInfo(context.to, at).catch(e => winston.error(e.stack)));
+            const resolveAts = async () => {
+                const ats = context.extra.ats;
+                const resolved = new Map();   // at -> info | null
+                const missing = [];
+                for (const at of ats) {
+                    if (at === 'all') { resolved.set(at, null); continue; }   // 全体成员无需查询
+                    const key = `${at}@${context.to}`;
+                    if (groupInfo.has(key)) { resolved.set(at, groupInfo.get(key)); continue; }
+                    missing.push(at);
                 }
-            }
+                if (missing.length) {
+                    // 批量拉成员列表（含机器人自己的群名片），成功即预热全群缓存
+                    let list = null;
+                    try {
+                        list = await qqHandler.groupMemberList(context.to);
+                    } catch (e) { /* 列表失败再走单查 */ }
+                    if (Array.isArray(list)) {
+                        for (const m of list) {
+                            const info = { qq: m.user_id !== undefined ? m.user_id : m.qq, name: m.nickname, groupCard: m.card };
+                            if (info.qq !== undefined && info.qq !== null) {
+                                groupInfo.set(`${info.qq}@${context.to}`, info);
+                            }
+                        }
+                    }
+                    for (const at of missing) {
+                        const key = `${at}@${context.to}`;
+                        if (groupInfo.has(key)) { resolved.set(at, groupInfo.get(key)); continue; }
+                        let info = null;
+                        try {
+                            info = await qqHandler.groupMemberInfo(context.to, at);
+                        } catch (e) {
+                            try {
+                                await new Promise((r) => setTimeout(r, 1200));   // NapCat 瞬时抖动重试一次
+                                info = await qqHandler.groupMemberInfo(context.to, at);
+                            } catch (e2) { /* 放弃，走兜底文本 */ }
+                        }
+                        if (info) {
+                            groupInfo.set(`${info.qq || at}@${context.to}`, info);
+                            resolved.set(at, info);
+                        } else {
+                            resolved.set(at, null);
+                            if (list) groupInfo.set(key, null);   // 列表成功但无此人（多半已退群），缓存空标记避免反复查询
+                        }
+                    }
+                }
+                return resolved;
+            };
 
-            Promise.all(promises).then((infos) => {
-                for (let info of infos) {
-                    if (info) {
-                        groupInfo.set(`${info.qq||info.user_id}@${context.to}`, info);
-
+            resolveAts().then((resolved) => {
+                for (const at of context.extra.ats) {
+                    const info = resolved.get(at);
+                    let atText;
+                    if (at === 'all') {
+                        atText = '＠全体成员';
+                    } else if (info) {
                         const user = {
                             sender: {
-                                user_id: info.qq||info.user_id,
-                                nickname: info.name||info.nickname,
-                                card: info.groupCard||info.card
+                                user_id: info.qq !== undefined ? info.qq : at,
+                                nickname: info.name,
+                                card: info.groupCard,
                             }
                         };
-                        const searchReg = new RegExp(`\\[CQ:at,qq=${info.qq}\\]`, 'gu');
-                        const atText = `＠${qqHandler.escape(qqHandler.getNick(user))}`;
-                        context.text = context.text.replace(searchReg, atText);
+                        atText = `＠${qqHandler.escape(qqHandler.getNick(user))}`;
+                    } else {
+                        atText = `＠qq${at}`;   // 查不到昵称（API 全挂/已退群）：至少可读，不漏原始码
                     }
+                    context.text = context.text.replace(new RegExp(`\\[CQ:at,qq=${at}\\]`, 'gu'), atText);
                 }
             }).catch(e => winston.error(e.stack)).then(() => send());
         } else {
