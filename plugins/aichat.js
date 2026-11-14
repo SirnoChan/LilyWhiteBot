@@ -380,6 +380,63 @@ const safeReply = (msg, text) => {
         }
     };
 
+    // ---------------- TTS 语音（Gemini 原生 TTS，语音请求关键词或 [VOICE] 标记触发） ----------------
+    const ttsOpt = options.tts || {};
+    const ttsEnabled = ttsOpt.enabled !== false;   // 默认开启；仅语音请求关键词/[VOICE] 触发，成本可控
+    const ttsModel = ttsOpt.model || 'gemini-3.8-flash-tts';
+    const ttsVoice = ttsOpt.voice || 'Leda';          // 女声；可用 Kore/Puck/Aoede 等
+    const ttsMaxChars = ttsOpt.maxChars || 600;
+    const TTS_STYLE = '用轻快俏皮、元气满满的少女语气说：';
+
+    // PCM(16bit 单相) 包上 WAV 头，各平台语音接口都能吃
+    const pcmToWav = (pcm, rate) => {
+        const hdr = Buffer.alloc(44);
+        hdr.write('RIFF', 0); hdr.writeUInt32LE(36 + pcm.length, 4); hdr.write('WAVE', 8);
+        hdr.write('fmt ', 12); hdr.writeUInt32LE(16, 16); hdr.writeUInt16LE(1, 20); hdr.writeUInt16LE(1, 22);
+        hdr.writeUInt32LE(rate, 24); hdr.writeUInt32LE(rate * 2, 28); hdr.writeUInt16LE(2, 32); hdr.writeUInt16LE(16, 34);
+        hdr.write('data', 36); hdr.writeUInt32LE(pcm.length, 40);
+        return Buffer.concat([hdr, pcm]);
+    };
+
+    // 文本转语音，返回临时 wav 文件路径；文本先去 Markdown 符号（否则会被念出来）
+    const geminiSpeak = async (rawText) => {
+        const text = TTS_STYLE + String(rawText)
+            .replace(/\[DRAW:[^\]]*\]/gu, '')
+            .replace(/[*`#>]+/gu, '')
+            .replace(/https?:\/\/\S+/gu, '')
+            .trim()
+            .slice(0, ttsMaxChars);
+        if (!text.replace(TTS_STYLE, '').trim()) throw new Error('TTS 文本为空');
+        const body = {
+            contents: [{ role: 'user', parts: [{ text }] }],
+            generationConfig: {
+                responseModalities: ['AUDIO'],
+                speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: ttsVoice } } },
+            },
+        };
+        const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${ttsModel}:generateContent`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
+            body: JSON.stringify(body),
+            signal: AbortSignal.timeout(120000),
+        });
+        if (!res.ok) {
+            const t = await res.text();
+            throw new Error(`TTS HTTP ${res.status}: ${t.slice(0, 120)}`);
+        }
+        const data = await res.json();
+        const part = data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts
+            ? data.candidates[0].content.parts.find((p) => p.inlineData && p.inlineData.data)
+            : null;
+        if (!part) throw new Error('TTS 未返回音频');
+        const mime = String(part.inlineData.mimeType || 'audio/L16;rate=24000');
+        const rate = parseInt((mime.match(/rate=(\d+)/) || [0, '24000'])[1], 10) || 24000;
+        const wav = pcmToWav(Buffer.from(part.inlineData.data, 'base64'), rate);
+        const wavPath = path.join(tmpDir, 'aichat-tts-' + Date.now() + '-' + Math.floor(Math.random() * 1e6) + '.wav');
+        fs.writeFileSync(wavPath, wav);
+        return wavPath;
+    };
+
     // ---------------- 发送 ----------------
     const s3Upload = async (buf, ext) => {
         const s3 = pluginManager.global.servemediaS3;
@@ -391,7 +448,7 @@ const safeReply = (msg, text) => {
             credentials: { accessKeyId: s3.accessKeyId, secretAccessKey: s3.secretAccessKey },
         });
         const key = (s3.keyPrefix || 'lwb/') + crypto.createHash('md5').update(buf).digest('hex') + ext;
-        await client.send(new PutObjectCommand({ Bucket: s3.bucket, Key: key, Body: buf, ContentType: ext === '.png' ? 'image/png' : 'image/jpeg' }));
+        await client.send(new PutObjectCommand({ Bucket: s3.bucket, Key: key, Body: buf, ContentType: ext === '.png' ? 'image/png' : (ext === '.wav' ? 'audio/wav' : 'image/jpeg') }));
         return s3.publicBase.replace(/\/+$/u, '') + '/' + key;
     };
 
@@ -481,7 +538,7 @@ const safeReply = (msg, text) => {
                 }
             }
             // 主模型上下文：评审给出了容量按其取，否则默认 maxHistory
-            const msgs = [{ role: 'system', content: systemPrompt }];
+            const msgs = [{ role: 'system', content: systemPrompt + '\n群友要求语音、朗读或唱歌时，正常给出回应内容，并在回复最末尾单独一行输出 [VOICE]，系统会据此把回应转成语音发送；未被要求语音时不要输出 [VOICE]。' }];
             for (const m of h.slice(-(judgeContext || maxHistory))) {
                 const prefix = m.role === 'assistant' ? '' : `${m.name}：`;
                 msgs.push({ role: m.role, content: prefix + (m.text || '') });
@@ -514,6 +571,11 @@ const safeReply = (msg, text) => {
                 if (!answer || /^\[SKIP\]\s*$/u.test(answer.trim())) answer = forcedFallbackText;
             }
             daily.n++;   // 每日额度只计实际回复——auto 模式下 [SKIP] 沉默决策不消耗额度
+            // 语音请求：用户消息含语音关键词，或模型主动输出 [VOICE] 标记（剥掉标记再发文本）
+            const voiceAsked = /语音|读出来|读一下|说出来|念出来|念一?念|唱/u.test(String(msg.text || ''));
+            const voiceMarked = /\[VOICE\]/u.test(answer);
+            const wantsVoice = (voiceAsked || voiceMarked) && !/^\[SKIP\]/u.test(answer);
+            answer = answer.replace(/\s*\[VOICE\]\s*/gu, ' ').trim();
 
             // 画图：解析 [DRAW: ...] 标记（支持多张）
             const drawMatches = [...answer.matchAll(/\[DRAW:\s*([^\]]{5,600})\]/gu)];
@@ -556,6 +618,35 @@ const safeReply = (msg, text) => {
                 bridge.send(bm);
             } catch (e) { /* 橋接失敗忽略 */ }
             log(`[${chatKey}] -> (${answer.length}字) ${answer.slice(0, 160)}`);
+
+            // 语音投递：文本已先发出，语音随后生成发送（TTS 失败不影响文字回复）
+            if (ttsEnabled && wantsVoice && answer.trim()) {
+                try {
+                    const wavPath = await geminiSpeak(answer.slice(0, maxReplyChars));
+                    const voiceUrl = await s3Upload(fs.readFileSync(wavPath), '.wav');
+                    // 源平台：直接走该平台 processor 的 receive，语音以原生形式发进源群（QQ=CQ:record / TG=sendAudio / Discord=附件）
+                    try {
+                        const processor = bridge.processors.get(msg.handler.type);
+                        if (processor && voiceUrl) {
+                            const vm = new bridge.BridgeMsg(msg, { nick: 'Lily', text: '', extra: { uploads: [{ url: voiceUrl, type: 'audio' }] } });
+                            vm._pluginSource = 'aichat';
+                            await processor.receive(vm);
+                        }
+                    } catch (e2) {
+                        log(`source voice send failed: ${e2.message}`);
+                    }
+                    // 其他平台：语音文件走桥接（file.js 上传后按 audio 发送）
+                    try {
+                        const bm = new bridge.BridgeMsg(msg, { nick: 'Lily', text: '🔊', extra: { files: [{ client: msg.handler.type, type: 'voice', path: wavPath, name: 'reply.wav' }] } });
+                        bm._pluginSource = 'aichat';
+                        await bridge.send(bm);
+                    } catch (e3) { /* 橋接失敗忽略 */ }
+                    fs.unlink(wavPath, () => {});
+                    log(`[${chatKey}] -> [语音] (${ttsModel}/${ttsVoice})`);
+                } catch (e2) {
+                    log(`TTS failed: ${e2.message}`);
+                }
+            }
         } catch (e) {
             log(`respond error: ${e.message}`);
             await safeReply(msg, '（AI 出错了，稍后再试）');

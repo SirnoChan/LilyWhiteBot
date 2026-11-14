@@ -206,6 +206,14 @@ aichat:
   # judgeHistory: 40                          # 评审窗口条数
   #
   # 跨平台上下文：互联群共享对话历史（桥接副本自动并入各平台群上下文），无需配置。
+  #
+  # TTS 语音回复：群友说「语音/读出来/唱一首」或模型输出 [VOICE] 标记时，回复文本后跟发一条
+  # Gemini 原生 TTS 生成的语音（QQ 语音气泡 / TG 音频 / Discord 附件）。默认开启（仅语音请求触发）：
+  # tts:
+  #   enabled: false                           # 置 false 整体关闭语音回复
+  #   model: "gemini-3.8-flash-tts"            # 也可 gemini-3.1-flash-tts-preview / gemini-3.8-flash-lite-tts
+  #   voice: "Leda"                            # 音色（女声），另有 Kore/Puck/Aoede 等
+  #   maxChars: 600                            # 单条语音最长文本
   replyMode: auto
   replyAllIntervalSec: 30                   # all 模式逐条回应的发送间隔（秒）
   # replyAllQueueMax: 10                    # all 模式队列上限，超出丢弃最旧一条
