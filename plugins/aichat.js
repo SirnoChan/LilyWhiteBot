@@ -51,7 +51,7 @@ module.exports = (pluginManager, options) => {
 
     const apiBase = (options.apiBase || 'https://generativelanguage.googleapis.com/v1beta/openai').replace(/\/+$/u, '');
     const apiKey = options.apiKey || '';
-    const model = options.model || 'gemini-3.8-flash';
+    const model = options.model || 'gemini-4-hydrogen';
     const imageModel = options.imageModel || '';
     const searchEnabled = options.search !== false;
     const safetyOff = options.safetyOff !== false;
