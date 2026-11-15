@@ -674,7 +674,7 @@ const safeReply = (msg, text, replyId) => {
                     try {
                         const processor = bridge.processors.get(msg.handler.type);
                         if (processor && voiceUrl) {
-                            const vm = new bridge.BridgeMsg(msg, { nick: 'Lily', text: '', extra: { uploads: [{ url: voiceUrl, type: 'audio' }] } });
+                            const vm = new bridge.BridgeMsg(msg, { nick: 'Lily', _rememberTtl: 7 * 24 * 3600 * 1000, text: '', extra: { uploads: [{ url: voiceUrl, type: 'audio' }] } });
                             // 绕过了 prepareMsg，补齐 receive 渲染所需的 extra 字段
                             vm.extra.clientName = { shortname: msg.handler.id, fullname: msg.handler.type };
                             vm.extra.clients = 1;
@@ -686,7 +686,7 @@ const safeReply = (msg, text, replyId) => {
                     }
                     // 其他平台：正文 + 语音文件（🔊 前缀在合并历史/重建时剥掉）
                     try {
-                        const bm = new bridge.BridgeMsg(msg, { nick: 'Lily', text: '🔊 ' + answer.slice(0, maxReplyChars), extra: { files: [{ client: msg.handler.type, type: 'voice', path: wavPath, name: 'reply.wav' }] } });
+                        const bm = new bridge.BridgeMsg(msg, { nick: 'Lily', _rememberTtl: 7 * 24 * 3600 * 1000, text: '🔊 ' + answer.slice(0, maxReplyChars), extra: { files: [{ client: msg.handler.type, type: 'voice', path: wavPath, name: 'reply.wav' }] } });
                         bm._pluginSource = 'aichat';
                         await bridge.send(bm);
                     } catch (e3) { /* 橋接失敗忽略 */ }
@@ -724,7 +724,7 @@ const safeReply = (msg, text, replyId) => {
                     try {
                         const processor = bridge.processors.get(msg.handler.type);
                         if (processor && voiceUrl) {
-                            const vm = new bridge.BridgeMsg(msg, { nick: 'Lily', text: '', extra: { uploads: [{ url: voiceUrl, type: 'audio' }] } });
+                            const vm = new bridge.BridgeMsg(msg, { nick: 'Lily', _rememberTtl: 7 * 24 * 3600 * 1000, text: '', extra: { uploads: [{ url: voiceUrl, type: 'audio' }] } });
                             vm.extra.clientName = { shortname: msg.handler.id, fullname: msg.handler.type };
                             vm.extra.clients = 1;
                             vm._pluginSource = 'aichat';
@@ -734,7 +734,7 @@ const safeReply = (msg, text, replyId) => {
                         log(`source voice send failed: ${e2.message}`);
                     }
                     try {
-                        const bm = new bridge.BridgeMsg(msg, { nick: 'Lily', text: '🔊', extra: { files: [{ client: msg.handler.type, type: 'voice', path: wavPath, name: 'reply.wav' }] } });
+                        const bm = new bridge.BridgeMsg(msg, { nick: 'Lily', _rememberTtl: 7 * 24 * 3600 * 1000, text: '🔊', extra: { files: [{ client: msg.handler.type, type: 'voice', path: wavPath, name: 'reply.wav' }] } });
                         bm._pluginSource = 'aichat';
                         await bridge.send(bm);
                     } catch (e3) { /* 橋接失敗忽略 */ }

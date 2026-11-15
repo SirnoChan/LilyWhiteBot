@@ -153,7 +153,7 @@ const bridge = {
                         return Promise.resolve(processor.receive(msg2)).then((sentIds) => {
                             // 記錄各平台轉發訊息的 ID，供跨平台回復/撤回使用
                             if (Array.isArray(sentIds) && sentIds.length && msg.handler && msg._nativeId !== undefined) {
-                bridge.rememberSent(msg.handler.type, msg._nativeId, msg.to, client, sentIds);
+                bridge.rememberSent(msg.handler.type, msg._nativeId, msg.to, client, sentIds, msg._rememberTtl);
                             }
                         });
                     } else {
