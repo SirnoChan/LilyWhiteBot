@@ -176,10 +176,18 @@ module.exports = (pluginManager, options) => {
     };
     rebuildHistoryFromDb();
 
-// BridgeMsg 没有 reply 方法；统一经 handler.reply 路由（返回 Promise 或 void）
-const safeReply = (msg, text) => {
+// BridgeMsg 没有 reply 方法；统一经 handler.reply 路由（返回 Promise 或 void）。
+// replyId 传入时使用 IM 原生引用回复：QQ=CQ:reply（handler 处理）、Telegram=reply_to_message_id（透传）、
+// Discord=reference（handler 处理）；IRC/Matrix 无原生引用，忽略该参数发普通消息
+const safeReply = (msg, text, replyId) => {
     try {
-        return Promise.resolve(msg.handler.reply(msg, String(text), { noPrefix: true })).catch((e) => winston.warn(`[aichat] reply failed: ${e.message}`));
+        const options = { noPrefix: true };
+        if (replyId !== undefined && replyId !== null) {
+            options.replyId = replyId;
+            options.reply_to_message_id = replyId;
+            options.reference = replyId;
+        }
+        return Promise.resolve(msg.handler.reply(msg, String(text), options)).catch((e) => winston.warn(`[aichat] reply failed: ${e.message}`));
     } catch (e) {
         winston.warn(`[aichat] reply threw: ${e.message}`);
         return Promise.resolve();
@@ -502,8 +510,8 @@ const safeReply = (msg, text) => {
 
     // 回答發送到源平台（文字+圖片直鏈），圖片同時經 file.js 橋接為其餘平台的真圖片。
     // 源平台也帶 🤖 前綴（與其他平台廣播樣式一致，標識這是 AI 發言）
-    const sendChatReply = async (msg, text, tmpImages) => {
-        await safeReply(msg, text ? '🤖 ' + text : text);
+    const sendChatReply = async (msg, text, tmpImages, replyId) => {
+        await safeReply(msg, text ? '🤖 ' + text : text, replyId);
         if (tmpImages && tmpImages.length) {
             try {
                 const files = [];
@@ -534,6 +542,8 @@ const safeReply = (msg, text) => {
     const respondNow = async (msg, explicit, force = explicit) => {
         const chatKey = msg.to_uid;
         const h = history.get(chatKey) || [];
+        // 被回复/被点名时，回复用 IM 原生引用功能引用触发消息
+        const replyRefId = (explicit && msg._nativeId !== undefined && msg._nativeId !== null) ? msg._nativeId : undefined;
         if (!h.length) return;
 
         if (!apiKey) {
@@ -640,7 +650,7 @@ const safeReply = (msg, text) => {
                 }
                 if (drawn) {
                     const outText = outTextParts.join('\n').trim() || `[图片x${drawn}]`;
-                    await sendChatReply(msg, outText, tmpImages);
+                    await sendChatReply(msg, outText, tmpImages, replyRefId);
                     h.push({ role: 'assistant', text: (chatText || `[图片x${drawn}]`).slice(0, 300) });
                     while (h.length > maxHistory) h.shift();
                     for (const m of h) m.images = undefined;
@@ -688,7 +698,7 @@ const safeReply = (msg, text) => {
                     log(`[${chatKey}] -> [语音] (${ttsModel}/${ttsVoice})`);
                 } catch (e2) {
                     log(`TTS failed (${e2.message})，退回文字回复`);
-                    await safeReply(msg, '🤖 ' + answer.slice(0, maxReplyChars));
+                    await safeReply(msg, '🤖 ' + answer.slice(0, maxReplyChars), replyRefId);
                     try {
                         const bm = new bridge.BridgeMsg(msg, { text: '🤖 ' + answer.slice(0, maxReplyChars), nick: 'Lily' });
                         bm._pluginSource = 'aichat';
@@ -698,7 +708,7 @@ const safeReply = (msg, text) => {
                 return;
             }
 
-            await safeReply(msg, '🤖 ' + answer.slice(0, maxReplyChars));
+            await safeReply(msg, '🤖 ' + answer.slice(0, maxReplyChars), replyRefId);
             try {
                 const bm = new bridge.BridgeMsg(msg, { text: '🤖 ' + answer.slice(0, maxReplyChars), nick: 'Lily' });
                 bm._pluginSource = 'aichat';   // 插件来源标记：消息记录归属 + intake 跳过自己的广播回流
@@ -929,7 +939,8 @@ const safeReply = (msg, text) => {
         const msgs = [{ role: 'system', content: systemPrompt }, { role: 'user', content: q.slice(0, 2000) }];
         geminiChat(msgs).catch(() => fallbackChat(msgs)).then((answer) => {
             const text = String(answer).slice(0, maxChars);
-            context.reply('🤖 ' + text).catch(() => {});
+            // 顺带修复：Context.reply 不返回 Promise，旧写法 .catch 会同步抛错导致 !ai 恒报错
+            safeReply(context, '🤖 ' + text, context._nativeId);
             try {
                 const bm = new bridge.BridgeMsg(context, { text: '🤖 ' + text });
                 bm._pluginSource = 'aichat';
