@@ -159,6 +159,11 @@ const init = (b, h, c, pm) => {
      */
     // 將訊息加工好並發送給其他群組
     qqHandler.on('text', async (context) => {
+        // NapCat 的 reportSelfMessage 会把机器人自己发的消息再回报一遍：
+        // 不拦截的话，AI 回复会被当作新消息再次桥接/触发，造成重复回复
+        if (qqHandler._qq && String(context.from) === String(qqHandler._qq)) {
+            return;
+        }
         const send = () => bridge.send(context).catch(e => winston.error(e.stack));
 
         // // 「應用消息」

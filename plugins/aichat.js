@@ -797,6 +797,9 @@ const safeReply = (msg, text, replyId) => {
         try {
             // 自己广播的回流：跳过（回应已作为 assistant 记入历史，避免自循环与重复记录）
             if (msg._pluginSource === 'aichat') return Promise.resolve();
+            // NapCat reportSelfMessage 回报的 AI 自己发言：同样跳过（不得再次触发回应）
+            const selfQqSelf = msg.handler && msg.handler._qq;
+            if (selfQqSelf && msg.from_uid === 'qq/' + selfQqSelf) return Promise.resolve();
             const chatKey = msg.to_uid;
             if (!chatKey) return Promise.resolve();
 
