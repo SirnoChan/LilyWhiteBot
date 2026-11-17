@@ -136,6 +136,14 @@ module.exports = (pluginManager, options) => {
 
     const log = (...a) => winston.info(`[aichat] ${a.join(' ')}`);
 
+    // 启用判定不绑定单一平台：互联组内任一成员（含 QQ 之外的平台）在启用列表，
+    // 整个互联组即视为启用——QQ 端离线/掉线时，其余平台照常获得 AI 回复
+    const enabledFor = (msg) => {
+        const uids = [msg.to_uid];
+        if (Array.isArray(msg.extra.mapto)) uids.push(...msg.extra.mapto);
+        return uids.some((u) => alwaysGroups.has(u) || enabledChat.has(u));
+    };
+
     // 强制回应场景（被@/回复点名 / all 模式 / 评审通过）附加到 system prompt 的硬性要求
     const forceSuffix = (explicit, judgeApproved) => explicit
         ? '\n\n【硬性要求】用户刚刚@了你或回复了你的消息，这是点名，必须针对其内容给出实质回应；禁止输出 [SKIP]，禁止保持沉默。'
@@ -792,7 +800,7 @@ const safeReply = (msg, text, replyId) => {
             const chatKey = msg.to_uid;
             if (!chatKey) return Promise.resolve();
 
-            const enabled = alwaysGroups.has(chatKey) || enabledChat.has(chatKey);
+            const enabled = enabledFor(msg);
             const text = String(msg.text || '').trim();
             const isAdmin = adminIds.has(msg.from_uid);
 
@@ -909,7 +917,7 @@ const safeReply = (msg, text, replyId) => {
         try {
             const chatKey = msg2.to_uid;
             if (!chatKey) return;
-            if (!(alwaysGroups.has(chatKey) || enabledChat.has(chatKey))) return;   // 仅维护启用群
+            if (!enabledFor(msg2)) return;   // 仅维护启用群
             if (msg2.isNotice) return;
             const h = history.get(chatKey) || [];
             if (msg2._pluginSource === 'aichat') {
