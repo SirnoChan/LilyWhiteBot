@@ -892,16 +892,19 @@ const safeReply = (msg, text, replyId) => {
             if (replyMode === 'mention') return Promise.resolve();   // 只回应被@/被回复，其余沉默
 
             const commandLike = /^[!/#]/u.test(text);
+            // 纯@他人消息（除@提及外没有任何实质内容）：不是在叫 bot，跳过（评审模型会把裸@误判为点名）
+            const mentionsOnly = !images.length && text &&
+                !text.replace(/[@＠][^\s，。！？,!?；;:：.]+/gu, '').trim();
 
             if (replyMode === 'all') {
-                // 逐条回应：每条消息都排队回应（命令除外，交回命令系统），按固定间隔发送
-                if ((text || images.length) && !commandLike) enqueueAll(msg);
+                // 逐条回应：每条消息都排队回应（命令/纯@他人除外）
+                if ((text || images.length) && !commandLike && !mentionsOnly) enqueueAll(msg);
                 return Promise.resolve();
             }
 
             // auto：是否回应交给 AI 判断（[SKIP] 沉默协议），不做冷却/长度/重复预过滤；
-            // 仅跳过命令消息（归命令系统），防抖合并连续发言
-            if (triggerAll && (text || images.length) && !commandLike) {
+            // 仅跳过命令消息（归命令系统）与纯@他人的消息，防抖合并连续发言
+            if (triggerAll && (text || images.length) && !commandLike && !mentionsOnly) {
                 if (pendingTimers.has(chatKey)) clearTimeout(pendingTimers.get(chatKey));
                 const density = densityOf(chatKey);
                 const effDebounce = lerp(debounceMinMs, debounceMaxMs, density);
