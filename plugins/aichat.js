@@ -307,6 +307,7 @@ const safeReply = (msg, text, replyId) => {
         '值得回应（REPLY）：有具体内容可聊、有人提问或求助、有人提到或问候 Lily、能接上的趣事。\n' +
         '不值得回应（SKIP）：纯表情或灌水、无信息量的单字、明显不是说给 Lily 听、没有可回应的内容。\n' +
         '特别注意：消息中出现 ＠Lily、@Lily White、莉莉、@Lily_White_bot 等提及 Lily 的内容，或是在回复 Lily 说的话，一律视为点名，必须 REPLY。\n' +
+        '相反：消息 @ 的是别人或其他机器人（如 @某某_bot、@某群友）而不是 Lily，是在对那个对象说话，一律 SKIP。\n' +
         '平时宁可不说话，不确定时倾向 SKIP。\n' +
         '输出格式（三选一）：\n' +
         'SKIP\n' +
@@ -915,6 +916,24 @@ const safeReply = (msg, text, replyId) => {
                 return Promise.resolve();
             }
 
+            // 消息 @ 了别人（不是莉莉自己）：是说给那个人/那个 bot 的，不送评——评审模型会误判成点名，
+            // 主模型又被「禁止 SKIP」逼着硬答，产出「在的在的」式无意义回复
+            const mentionsOthers = (() => {
+                const ats = msg.extra && msg.extra.ats;
+                if (Array.isArray(ats) && ats.length && selfQq) {
+                    return ats.some((a) => parseInt(a, 10) !== selfQq);   // @ 了任何非莉莉的号码
+                }
+                const atNames = text.match(/[@＠][^\s，。！？,!?；;:：.]+/gu);
+                if (!atNames) return false;
+                const selfHandles = [msg.handler && msg.handler.username, ...botNickTriggers]
+                    .filter(Boolean).map((x) => String(x).toLowerCase());
+                return atNames.some((x) => {
+                    const nm = x.slice(1).toLowerCase();
+                    return !selfHandles.some((h) => nm === h || nm.includes(h) || h.includes(nm));
+                });
+            })();
+            if (mentionsOthers) return Promise.resolve();
+
             if (replyMode === 'mention') return Promise.resolve();   // 只回应被@/被回复，其余沉默
 
             const commandLike = /^[!/#]/u.test(text);
@@ -924,13 +943,13 @@ const safeReply = (msg, text, replyId) => {
 
             if (replyMode === 'all') {
                 // 逐条回应：每条消息都排队回应（命令/纯@他人除外）
-                if ((text || images.length) && !commandLike && !mentionsOnly) enqueueAll(msg);
+                if ((text || images.length) && !commandLike && !mentionsOnly && !mentionsOthers) enqueueAll(msg);
                 return Promise.resolve();
             }
 
             // auto：是否回应交给 AI 判断（[SKIP] 沉默协议），不做冷却/长度/重复预过滤；
             // 仅跳过命令消息（归命令系统）与纯@他人的消息，防抖合并连续发言
-            if (triggerAll && (text || images.length) && !commandLike && !mentionsOnly) {
+            if (triggerAll && (text || images.length) && !commandLike && !mentionsOnly && !mentionsOthers) {
                 if (pendingTimers.has(chatKey)) clearTimeout(pendingTimers.get(chatKey));
                 const density = densityOf(chatKey);
                 const effDebounce = chattyGroups.has(chatKey)
