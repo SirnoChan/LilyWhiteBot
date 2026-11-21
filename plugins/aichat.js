@@ -555,7 +555,7 @@ const safeReply = (msg, text, replyId) => {
 
     // ---------------- 回應核心 ----------------
     // explicit：被@/回复点名（有额度提示等用户可见反馈）；force：强制回应（绕过冷却、禁止 [SKIP]）。explicit 蕴含 force
-    const respondNow = async (msg, explicit, force = explicit) => {
+    const respondNowInner = async (msg, explicit, force = explicit) => {
         const chatKey = msg.to_uid;
         const h = history.get(chatKey) || [];
         // 被回复/被点名时，回复用 IM 原生引用功能引用触发消息
@@ -763,6 +763,30 @@ const safeReply = (msg, text, replyId) => {
         } catch (e) {
             log(`respond error: ${e.message}`);
             await safeReply(msg, '（AI 出错了，稍后再试）');
+        }
+    };
+
+    // 每群同一时刻只跑一次生成：话痨档防抖 2.5s < 模型生成 4-8s，连发消息会并发触发两次回应。
+    // 生成中被触发（非点名）→ 记一次补答；点名 → 升级为补答的必答轮。结束后用最新历史补一轮。
+    const inFlight = new Set();
+    const followUp = new Map();   // chatKey -> { msg, explicit }
+    const respondNow = async (msg, explicit, force = explicit) => {
+        const chatKey = msg.to_uid;
+        if (inFlight.has(chatKey)) {
+            const prev = followUp.get(chatKey);
+            followUp.set(chatKey, { msg, explicit: explicit || (prev && prev.explicit) || false });
+            return;
+        }
+        inFlight.add(chatKey);
+        try {
+            await respondNowInner(msg, explicit, force);
+        } finally {
+            inFlight.delete(chatKey);
+            const fu = followUp.get(chatKey);
+            if (fu) {
+                followUp.delete(chatKey);
+                setTimeout(() => { respondNow(fu.msg, fu.explicit).catch((e) => log(`follow-up error: ${e.message}`)); }, 300);
+            }
         }
     };
 
