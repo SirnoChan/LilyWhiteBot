@@ -307,6 +307,8 @@ const safeReply = (msg, text, replyId) => {
         '值得回应（REPLY）：有具体内容可聊、有人提问或求助、有人提到或问候 Lily、能接上的趣事。\n' +
         '不值得回应（SKIP）：纯表情或灌水、无信息量的单字、明显不是说给 Lily 听、没有可回应的内容。\n' +
         '特别注意：消息中出现 ＠Lily、@Lily White、莉莉、@Lily_White_bot 等提及 Lily 的内容，或是在回复 Lily 说的话，一律视为点名，必须 REPLY。\n' +
+        '其他机器人（Chillno_bot、RSS bot 等）的发言或自动推送/回复，一律 SKIP。\n' +
+        
         '相反：消息 @ 的是别人或其他机器人（如 @某某_bot、@某群友）而不是 Lily，是在对那个对象说话，一律 SKIP。\n' +
         '平时宁可不说话，不确定时倾向 SKIP。\n' +
         '输出格式（三选一）：\n' +
@@ -838,6 +840,10 @@ const safeReply = (msg, text, replyId) => {
 
             const enabled = enabledFor(msg);
             const text = String(msg.text || '').trim();
+            // 其他机器人的发言不触发莉莉：bot 互答 / 自动 ping 是无意义触发源
+            // （如 TG 的 Chillno_bot 回复莉莉的消息会被 replyToBot 误判成点名，逼出「找我有事吗」式回复）
+            const senderNick = String(msg.nick || '');
+            if (/(bot|Ｂｏｔ)$/i.test(senderNick) || /机器人$/.test(senderNick)) return Promise.resolve();
             const isAdmin = adminIds.has(msg.from_uid);
 
             // 管理指令（跨平台）
