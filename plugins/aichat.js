@@ -68,6 +68,8 @@ module.exports = (pluginManager, options) => {
     const triggerAll = options.triggerAll !== false;
     // 三档回复预设：auto（被@/回复必答，其余是否回应由 AI 判断）/ all（逐条必答，间隔发送）/ mention（只答被@/回复）
     // 未显式配置时兼容旧 triggerAll：false → mention，true（默认）→ auto
+    // 话痨档群：介于 auto 与 all 之间——跳过评审模型（主模型自判更愿意回）+ 防抖压缩
+    const chattyGroups = new Set(options.chattyGroups || []);
     const replyMode = ['all', 'auto', 'mention'].includes(options.replyMode)
         ? options.replyMode
         : (options.triggerAll === false ? 'mention' : 'auto');
@@ -590,7 +592,7 @@ const safeReply = (msg, text, replyId) => {
             let judgeContext = 0;   // 评审按语义判定的上下文容量（条数），0 = 用默认 maxHistory
             // auto 模式非强制回应：评审模型先判断是否值得回应（免费/便宜档），通过才调主模型生成。
             // 带图片的消息跳过评审（评审模型看不了图，交由主模型带视觉自判）。
-            if (!force && !images.length && judgeCfg.apiKey) {
+            if (!force && !images.length && judgeCfg.apiKey && !chattyGroups.has(chatKey)) {
                 try {
                     const jc = await judgeChat(chatKey);
                     if (jc.verdict === 'SKIP') {
@@ -907,7 +909,9 @@ const safeReply = (msg, text, replyId) => {
             if (triggerAll && (text || images.length) && !commandLike && !mentionsOnly) {
                 if (pendingTimers.has(chatKey)) clearTimeout(pendingTimers.get(chatKey));
                 const density = densityOf(chatKey);
-                const effDebounce = lerp(debounceMinMs, debounceMaxMs, density);
+                const effDebounce = chattyGroups.has(chatKey)
+                    ? lerp(2500, 6000, density)
+                    : lerp(debounceMinMs, debounceMaxMs, density);
                 pendingTimers.set(chatKey, setTimeout(() => {
                     pendingTimers.delete(chatKey);
                     respondNow(msg, false).catch((e) => log(`respond error: ${e.message}`));
@@ -977,5 +981,5 @@ const safeReply = (msg, text, replyId) => {
         handler.addCommand('/ai', quickAsk);
     }
 
-    winston.info(`[aichat] ready (model: ${model}, judge: ${judgeCfg.apiKey ? judgeCfg.model : 'off'}, search: ${searchEnabled}, image: ${imageModel || 'off'}, replyMode: ${replyMode}, triggerAll: ${triggerAll}, alwaysGroups: ${alwaysGroups.size})`);
+    winston.info(`[aichat] ready (model: ${model}, judge: ${judgeCfg.apiKey ? judgeCfg.model : 'off'}, search: ${searchEnabled}, image: ${imageModel || 'off'}, replyMode: ${replyMode}, triggerAll: ${triggerAll}, alwaysGroups: ${alwaysGroups.size}, chatty: ${chattyGroups.size})`);
 };
